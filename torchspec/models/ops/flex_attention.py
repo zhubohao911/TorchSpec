@@ -27,7 +27,10 @@ from torch.nn.attention.flex_attention import (
 )
 from transformers.utils import is_torchdynamo_compiling
 
-dynamo.config.recompile_limit = 64
+try:
+    dynamo.config.recompile_limit = 64
+except AttributeError:
+    dynamo.config.cache_size_limit = 64
 
 
 # Reference Implementation https://github.com/huggingface/transformers/blob/main/src/transformers/integrations/flex_attention.py
