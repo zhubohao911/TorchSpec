@@ -89,4 +89,3 @@ wandb/log.txt
 
 .claude/
 wandb/
-docs/inference/dflash/dflash_implementation_log.md
