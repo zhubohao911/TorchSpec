@@ -80,6 +80,37 @@ Override any config value via CLI:
 
 See [examples/README.md](examples/README.md) for details.
 
+## Resume Vs Continual Training
+
+Both modes use `training.load_path`, but they restore different state:
+
+| Goal | `training.load_path` | `training.continual_training` | What gets restored |
+|------|----------------------|-------------------------------|--------------------|
+| Resume an interrupted run | Required | `false` (default) | Model, optimizer, LR scheduler, RNG, and step metadata |
+| Start a new run from existing weights | Required | `true` | Model weights only |
+
+Resume the same run:
+
+```yaml
+training:
+  load_path: /path/to/old_run/checkpoints
+
+output_dir: /path/to/old_run
+```
+
+Start a new run from existing weights:
+
+```yaml
+training:
+  load_path: /path/to/old_run/checkpoints
+  continual_training: true
+  learning_rate: 1e-5
+  warmup_ratio: 0.01
+  num_epochs: 1
+
+output_dir: /path/to/new_run
+```
+
 ## Checkpoint Conversion
 
 Convert an FSDP checkpoint to HuggingFace format:
