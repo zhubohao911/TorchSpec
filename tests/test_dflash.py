@@ -1045,9 +1045,9 @@ class TestDFlashConfigYAML(unittest.TestCase):
         config = AutoDraftModelConfig.from_dict(config_dict)
         from torchspec.models.draft.dflash import DFlashConfig
         self.assertIsInstance(config, DFlashConfig)
-        self.assertEqual(config.hidden_size, 3584)
+        self.assertEqual(config.hidden_size, 4096)
         self.assertEqual(config.num_target_layers, 5)
-        self.assertEqual(config.target_num_hidden_layers, 28)
+        self.assertEqual(config.target_num_hidden_layers, 36)
 
 
 if __name__ == "__main__":
