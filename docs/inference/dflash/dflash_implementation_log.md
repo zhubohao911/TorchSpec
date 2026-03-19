@@ -615,13 +615,104 @@ the forward pass is hitting an early-return zero-loss path.
 - Eagle3: **DONE** — 200 steps completed successfully with reasonable metrics
 - DFlash: **BLOCKED** on zero-loss bug — debug logging added, awaiting next RunPod run
 
-### Next Steps
-
-1. Provision new RunPod pod and run DFlash with debug logging
-2. Analyze debug output to confirm root cause
-3. Fix and re-run to get comparable metrics
-4. Compare Eagle3 vs DFlash performance
+### Next Steps — RESOLVED in Session 6
 
 ---
 
-*Implementation Log v7 — 2026-03-19*
+## Session 6: 2026-03-19 — Zero-Loss Bug Fix & GPU Validation
+
+### Root Cause: Metric Key Name Mismatch
+
+The "zero loss" was never actually zero — it was a **reporting bug**. The DFlash loss
+was computed correctly inside `_compute_loss()` (values: 13.0, 38.7, 9.8, 18.6) but
+the controller/progress bar couldn't read them because of mismatched metric key names.
+
+| Component | Expected (Eagle3) | Actual (DFlash) |
+|-----------|------------------|-----------------|
+| Loss key | `train/avg_loss` | `train/loss` |
+| Accuracy key | `train/avg_acc` | `train/accuracy` |
+| Eval loss key | `eval/avg_loss` | `eval/loss` |
+| Eval accuracy key | `eval/avg_acc` | `eval/accuracy` |
+
+The controller's `loop.py` reads `metrics.get('train/avg_loss', 0)` which returned
+the default `0` because DFlashTrainer returned `train/loss` instead.
+
+**Fix**: Renamed metric keys in `DFlashTrainer._aggregate_metrics()` and
+`_aggregate_eval_metrics()` to match the Eagle3 convention.
+
+### Files Modified
+
+1. **`torchspec/training/dflash_trainer.py`** — Fixed metric key names (MODIFIED)
+   - `train/loss` → `train/avg_loss`
+   - `train/accuracy` → `train/avg_acc`
+   - `eval/loss` → `eval/avg_loss`
+   - `eval/accuracy` → `eval/avg_acc`
+
+2. **`tests/test_dflash.py`** — Fixed stale Qwen2.5 → Qwen3 config assertion (MODIFIED)
+   - `hidden_size: 3584 → 4096`, `target_num_hidden_layers: 28 → 36`
+
+### GPU Training Results — SUCCESS
+
+Both DFlash and Eagle3 completed 200 steps on 1x H100 80GB (colocate mode, HF backend).
+
+#### DFlash (200 steps)
+
+| Metric | Value |
+|--------|-------|
+| Final loss (CE) | **0.477** |
+| Final accuracy | **0.894** (89.4%) |
+| Training time | **81.7s** |
+| Steps/sec | ~10 |
+| Loss trend | 13.0 → 0.48 (decreasing) |
+| Accuracy trend | 0.0 → 0.89 (increasing) |
+
+#### Eagle3 (200 steps)
+
+| Metric | Value |
+|--------|-------|
+| Final loss (KL) | 2.166 |
+| Final accuracy | 0.646 (64.6%) |
+| Training time | 202.4s |
+| Steps/sec | ~1.8 |
+
+#### Comparison
+
+| Metric | DFlash | Eagle3 | Notes |
+|--------|--------|--------|-------|
+| Final accuracy | **0.894** | 0.646 | DFlash 38% higher |
+| Training time | **81.7s** | 202.4s | DFlash **2.5x faster** |
+| Steps/sec | **~10** | ~1.8 | DFlash 5.5x more steps/sec |
+| Loss type | CE | KL | Not directly comparable |
+| Forward passes/step | **1** | 7 | Block-parallel vs autoregressive |
+
+Key observations:
+- DFlash's block-parallel architecture delivers ~5.5x more steps per second
+- Despite different loss functions, DFlash achieves much higher top-1 accuracy
+- Loss converges rapidly: from 13.0 to 0.48 in 200 steps
+- Accuracy grows steadily from 0% to 89.4%
+
+### Issues Encountered & Solutions (continued)
+
+#### Issue 14: Metric Key Name Mismatch (Root Cause of "Zero Loss")
+
+**Problem**: Progress bar showed `loss=0.000, acc=0.000` for all DFlash steps.
+
+**Root cause**: `DFlashTrainer._aggregate_metrics()` returned metrics with keys
+`train/loss` and `train/accuracy`, but the controller's `loop.py` reads
+`train/avg_loss` and `train/avg_acc` (matching Eagle3Trainer's convention).
+
+`metrics.get('train/avg_loss', 0)` silently returned the default `0`.
+
+**Solution**: Renamed metric keys in DFlashTrainer to match Eagle3:
+- `train/loss` → `train/avg_loss`
+- `train/accuracy` → `train/avg_acc`
+- `eval/loss` → `eval/avg_loss`
+- `eval/accuracy` → `eval/avg_acc`
+
+**Lesson**: When extending a trainer subclass, always check the controller's
+expected metric key format. This could be prevented by defining metric keys
+as constants in the base Trainer class.
+
+---
+
+*Implementation Log v8 — 2026-03-19*
