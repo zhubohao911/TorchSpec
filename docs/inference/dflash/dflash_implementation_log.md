@@ -564,12 +564,103 @@ Resume mechanism: `checkpoint.py` reads `training.load_path` → finds `latest_c
 
 ---
 
+## Session 10: 2026-03-21 — Phase C Resume & PyTorch 2.9.1 Migration
+
+### Context
+
+Training paused at step ~17,001 (72%, epoch 3/4). Pod was restarted, wiping all pip packages. SGLang's pinned commit (`0f2df93`) now requires PyTorch 2.9.1 (up from 2.6.0), triggering several compatibility issues during environment rebuild.
+
+### Environment Changes
+
+| Component | Previous | Current |
+|-----------|----------|---------|
+| PyTorch | 2.6.0+cu124 | **2.9.1+cu128** |
+| torchao | (not installed) | **0.9.0** |
+| SGLang | 0.5.8.post1 | **0.5.9** |
+| sgl-kernel | 0.3.x | **0.3.21** |
+| `PYTORCH_CUDA_ALLOC_CONF` | Used | **Deprecated** → `PYTORCH_ALLOC_CONF` |
+
+### Issues Encountered
+
+#### Issue 23: `PYTORCH_CUDA_ALLOC_CONF` Deprecated in PyTorch 2.9+
+
+**Problem**: PyTorch 2.9.1 renamed the environment variable. Using the old name produces:
+```
+Warning: PYTORCH_CUDA_ALLOC_CONF is deprecated, use PYTORCH_ALLOC_CONF instead
+```
+
+**Solution**: Use `export PYTORCH_ALLOC_CONF=expandable_segments:True` instead.
+
+#### Issue 24: `flashinfer-jit-cache==0.6.2` Not Available on cu124 Index
+
+**Problem**: `pip3 install flashinfer-jit-cache==0.6.2 --index-url https://flashinfer.ai/whl/cu124` fails with `No matching distribution found`. The cu124 wheel index doesn't have 0.6.2.
+
+**Solution**: Not needed as a separate install — SGLang's `[all]` extras already install `flashinfer_python-0.6.2` and `flashinfer_cubin-0.6.2` which provide the same functionality. Skip the standalone flashinfer install.
+
+#### Issue 25: SGLang Engine Ray Actor Timeout (30s) with PyTorch 2.9.1
+
+**Problem**: Training crashes during SGLang engine initialization at `factory.py:250`:
+```
+ray.exceptions.GetTimeoutError: Get timed out: some object(s) not ready.
+```
+
+**Root cause**: `_prepare_sgl_engines()` calls `engine.find_free_port.remote()` with a **hardcoded 30s timeout** (line 252). With PyTorch 2.9.1, CUDA context initialization inside Ray actors takes significantly longer than with 2.6.0. The actor's `__init__` (which imports torch and initializes CUDA) exceeds the 30s limit before `find_free_port` can even execute.
+
+The same 30s timeout appears at 3 locations in `factory.py` (lines 238, 252, 377).
+
+**Fix**: Patched all three `timeout=30` → `timeout=120` in `torchspec/inference/factory.py`:
+```bash
+sed -i "s/timeout=30,/timeout=120,/g" torchspec/inference/factory.py
+```
+
+**Note**: This is a local pod patch, not committed. The `init_timeout` config (default 300s) only applies to the engine `.init()` call (line 290), not to the pre-init `find_free_port` calls.
+
+### Resume Results
+
+| Metric | Value |
+|--------|-------|
+| Resumed from | Step 17,001 / 23,704 (72%, epoch 3/4) |
+| Loss | 2.7-4.1 (correctly in range, not 10-12) |
+| Accuracy | 0.20-0.32 |
+| Speed | ~1.35 s/step (~0.75 step/s) |
+| Previous speed | 2.1 step/s (with PyTorch 2.6.0) |
+| ETA | ~2.5 hours |
+| Log file | `/tmp/phase_c_resume3.log` |
+
+**Speed regression**: 2.1 → 0.75 step/s (64% slower) after PyTorch 2.9.1 upgrade. Likely causes:
+1. torch.compile / Triton kernel cache invalidated (needs re-warmup)
+2. Changed CUDA allocator behavior
+3. Different Triton version (3.5.1 → 3.6.0) generating different kernels
+
+Speed should improve as inductor cache warms up. Monitor over next ~30 minutes.
+
+### Updated Resume Procedure
+
+Changes from previous procedure (Session 9):
+
+1. **Step 3**: Don't install PyTorch separately — let SGLang's `pip install -e "_sglang/python[all]"` pull the correct version (currently 2.9.1)
+2. **Step 4**: Skip standalone flashinfer install (included in SGLang `[all]`)
+3. **New Step 3.5**: Patch factory.py timeouts: `sed -i "s/timeout=30,/timeout=120,/g" torchspec/inference/factory.py`
+4. **Env var**: Use `PYTORCH_ALLOC_CONF` instead of `PYTORCH_CUDA_ALLOC_CONF`
+
+### Monitor Command
+
+```bash
+# In a separate terminal:
+ssh -o RequestTTY=force -i ~/.ssh/id_ed25519 sguy1wcn46v8zr-64411b9f@ssh.runpod.io
+tail -f /tmp/phase_c_resume3.log
+```
+
+---
+
 ## Pending Work
 
-1. **Resume Phase C training**: 50K samples × 4 epochs, ~2.7 hours remaining from step ~4200
+1. ~~**Resume Phase C training**~~: ✅ Resumed from step 17,001 (2026-03-21)
 2. **Inference benchmark**: Extract converged checkpoint, target τ ≥ 3.0
 3. **Draft KV cache**: Add KV cache support to `DFlashDraftModel.forward()` (currently recomputes full context each cycle — O(n²) scaling)
 4. **Eagle3 inference comparison**: Side-by-side benchmark
+5. **Commit factory.py timeout fix**: Increase `find_free_port` timeout from 30s to 120s for PyTorch 2.9+ compatibility
+6. **Update resume guide**: Reflect PyTorch 2.9.1 changes (env var rename, skip standalone flashinfer, factory.py patch)
 
 ---
 
@@ -585,4 +676,4 @@ Resume mechanism: `checkpoint.py` reads `training.load_path` → finds `latest_c
 
 ---
 
-*Implementation Log v15 — 2026-03-21*
+*Implementation Log v16 — 2026-03-21*
