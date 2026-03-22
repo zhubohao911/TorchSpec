@@ -144,7 +144,7 @@ def _prepare_hf_engines(args, pg, mooncake_config=None, engine_group: int = 0) -
 def _init_hf_engines(args, pg, mooncake_config=None, engine_group: int = 0) -> list:
     """Initialize HF engines with Ray placement groups."""
     engines, init_handles = _prepare_hf_engines(args, pg, mooncake_config, engine_group)
-    _wait_for_init(init_handles, "HF", timeout=300)
+    _wait_for_init(init_handles, "HF", timeout=1200)
     return engines
 
 
@@ -235,7 +235,7 @@ def _prepare_sgl_engines(
                 head_engine = engines[replica_idx * nnodes]
                 ip, port = ray.get(
                     [head_engine.get_node_ip.remote(), head_engine.find_free_port.remote()],
-                    timeout=30,
+                    timeout=120,
                 )
                 addr = f"{ip}:{port}"
                 dist_init_addrs[replica_idx] = addr
@@ -249,7 +249,7 @@ def _prepare_sgl_engines(
     for i in range(num_engines):
         port = ray.get(
             engines[i].find_free_port.remote(start_port=next_start, consecutive=2),
-            timeout=30,
+            timeout=120,
         )
         pre_allocated_ports[i] = port
         next_start = port + 2
@@ -374,7 +374,7 @@ def _prepare_vllm_engines(
                 head_engine = engines[replica_idx * nnodes]
                 ip, port = ray.get(
                     [head_engine.get_node_ip.remote(), head_engine.find_free_port.remote()],
-                    timeout=30,
+                    timeout=120,
                 )
                 addr = f"{ip}:{port}"
                 dist_init_addrs[replica_idx] = addr
