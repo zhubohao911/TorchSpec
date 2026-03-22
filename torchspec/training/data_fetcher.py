@@ -326,9 +326,15 @@ class PrefetchedDataFetcher:
 
     _SENTINEL = object()
 
-    def __init__(self, inner: MooncakeDataFetcher, prefetch_depth: int = 2):
+    def __init__(
+        self,
+        inner: MooncakeDataFetcher,
+        prefetch_depth: int = 2,
+        target_device: Optional[torch.device] = None,
+    ):
         self.inner = inner
         self.prefetch_depth = prefetch_depth
+        self.target_device = target_device
         self._queue: queue.Queue = queue.Queue(maxsize=prefetch_depth)
         self._thread: Optional[threading.Thread] = None
         self._started = False
@@ -353,6 +359,15 @@ class PrefetchedDataFetcher:
         self._ensure_started()
         return self
 
+    def _to_device(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Move a batch of tensors to the target device (GPU)."""
+        if self.target_device is None:
+            return batch
+        return {
+            k: v.to(self.target_device, non_blocking=True) if isinstance(v, torch.Tensor) else v
+            for k, v in batch.items()
+        }
+
     def __next__(self) -> Dict[str, torch.Tensor]:
         if self._error is not None:
             raise self._error
@@ -361,4 +376,4 @@ class PrefetchedDataFetcher:
             if self._error is not None:
                 raise self._error
             raise StopIteration
-        return item
+        return self._to_device(item)
