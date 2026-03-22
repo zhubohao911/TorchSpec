@@ -161,11 +161,18 @@ class Trainer(abc.ABC):
 
         collator = DataCollatorWithPadding()
 
+        prefetch_depth = getattr(self.args, "prefetch_depth", 0)
+        gpu_device = torch.cuda.current_device()
+
+        # When prefetching, stage data on CPU to avoid GPU contention between
+        # background Mooncake TCP transfers and forward/backward compute.
+        fetch_device = "cpu" if prefetch_depth > 0 else gpu_device
+
         inner_fetcher = MooncakeDataFetcher(
             queue=self.train_queue,
             mooncake_store=self.mooncake_store,
             collator=collator,
-            device=torch.cuda.current_device(),
+            device=fetch_device,
             batch_size=per_dp_rank_batch_size,
             assistant_header_ids=self.assistant_header_ids,
             end_token_ids=self.end_token_ids,
@@ -174,12 +181,16 @@ class Trainer(abc.ABC):
             skip_after_header=self.skip_after_header,
         )
 
-        prefetch_depth = getattr(self.args, "prefetch_depth", 0)
         if prefetch_depth > 0:
-            self.data_fetcher = PrefetchedDataFetcher(inner_fetcher, prefetch_depth=prefetch_depth)
+            self.data_fetcher = PrefetchedDataFetcher(
+                inner_fetcher,
+                prefetch_depth=prefetch_depth,
+                target_device=gpu_device,
+            )
             logger.info(
                 f"[Rank {self.dp_rank}] Prefetched data fetcher initialized "
-                f"(batch_size={per_dp_rank_batch_size}, prefetch_depth={prefetch_depth})"
+                f"(batch_size={per_dp_rank_batch_size}, prefetch_depth={prefetch_depth}, "
+                f"staging=CPU, target={gpu_device})"
             )
         else:
             self.data_fetcher = inner_fetcher
