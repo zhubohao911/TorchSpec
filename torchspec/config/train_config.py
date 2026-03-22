@@ -117,7 +117,7 @@ class TrainingConfig:
     num_epochs: int = 10
     num_train_steps: Optional[int] = None
     micro_batch_size: int = 2
-    prefetch_depth: int = 4
+    prefetch_depth: int = 2  # 0 = disabled, >0 = async pre-fetch N batches ahead
     save_interval: int = 5000
     save_per_epoch: bool = False
     max_checkpoints: int = 0  # 0 = keep all, N > 0 = rotate and keep only N most recent
