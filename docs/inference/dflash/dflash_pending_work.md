@@ -29,16 +29,17 @@
 - [x] **Commit factory.py timeout fix** — 30s→120s for PyTorch 2.9+ compatibility (commit `cedef38`)
 - [x] **Async data pre-fetch** — CPU staging to overlap Mooncake TCP with GPU compute (commits `f75a285`, `3ceb630`, `bb922ba`)
 - [x] **Test 5b: CPU prefetch benchmark** — **6.8 step/s** (2.3x over Test 1 baseline), data fully overlapped with compute
-- [x] **Test 6: NVLink transport attempt** — `nvlink_intra` protocol not compiled in Mooncake v0.3.10 pip wheel
+- [x] **Test 6: NVLink transport investigation** — Not viable: built from source, patched protocol switch, but NVLink requires GPU memory while mooncake-store uses host memory (fundamental mismatch)
+- [x] **Test 7: 3 GPU + FULL_SHARD + CPU prefetch** — 5.3 step/s × 3 samples/step = 15.9 samples/s, ~17% faster than Test 5b (2 GPU)
 
 ## Active — Training
 
-- [ ] **Retrain from scratch** with bug fixes + speed optimizations applied — fresh training on perfectblend_50k, 6 epochs, with FULL_SHARD + CPU prefetch (est. ~1.5 hr at 6.8 step/s)
+- [ ] **Retrain from scratch** with bug fixes + speed optimizations applied — fresh training on perfectblend_50k, 6 epochs, best config = 3 GPU + FULL_SHARD + CPU prefetch (est. ~1.3 hr at 5.3 step/s × 3 samples/step)
 - [ ] **τ benchmark matrix** (Phase 3) — measure τ at epoch boundaries, by data size, by domain
 
 ## Active — Code Improvements
 
-- [ ] **Build Mooncake from source with NVLink** (P0): pip wheel lacks `nvlink_intra` transport. Build from source with cmake NVLink flags. Would eliminate Mooncake TCP entirely (<0.1ms vs 145ms).
+- [x] **NVLink transport investigation** — Not viable: `nvlink_intra` requires GPU memory but mooncake-store uses host memory. Built from source, patched `client_service.cpp`, but fails at `intranode_nvlink_transport.cpp:298` with "Unsupported memory type". TCP + CPU prefetch is the optimal approach.
 - [ ] **Draft KV cache**: Add KV cache support to `DFlashDraftModel.forward()` (currently recomputes full context each cycle — O(n²) scaling).
 
 ## Future
