@@ -1,6 +1,6 @@
 # DFlash Pending Work
 
-> Last updated: 2026-03-22
+> Last updated: 2026-03-22 (Phase 3 plan added)
 
 ## Completed
 
@@ -32,10 +32,13 @@
 - [x] **Test 6: NVLink transport investigation** — Not viable: built from source, patched protocol switch, but NVLink requires GPU memory while mooncake-store uses host memory (fundamental mismatch)
 - [x] **Test 7: 3 GPU + FULL_SHARD + CPU prefetch** — 5.3 step/s × 3 samples/step = 15.9 samples/s, ~17% faster than Test 5b (2 GPU)
 
-## Active — Training
+## Active — Phase 3: τ Benchmark Training
 
-- [ ] **Retrain from scratch** with bug fixes + speed optimizations applied — fresh training on perfectblend_50k, 6 epochs, best config = 3 GPU + FULL_SHARD + CPU prefetch (est. ~1.3 hr at 5.3 step/s × 3 samples/step)
-- [ ] **τ benchmark matrix** (Phase 3) — measure τ at epoch boundaries, by data size, by domain
+- [ ] **Full training run** — perfectblend_50k, 6 epochs, 3 GPU + FULL_SHARD + CPU prefetch, checkpoints at 5k/10k/15k steps
+- [ ] **τ @ 5k steps** — inference benchmark, measure τ and tok/s vs baseline and Eagle3
+- [ ] **τ @ 10k steps** — inference benchmark, measure τ and tok/s vs baseline and Eagle3
+- [ ] **τ @ 15k steps** — inference benchmark, measure τ and tok/s vs baseline and Eagle3
+- [ ] **Eagle3 baseline** — benchmark Eagle3 inference speed on same target model for comparison
 
 ## Active — Code Improvements
 
@@ -44,6 +47,5 @@
 
 ## Future
 
-- [ ] **Eagle3 inference comparison**: Side-by-side benchmark of DFlash vs Eagle3.
 - [ ] **Data regeneration**: Generate target-model-regenerated training data for τ ≥ 6.0 (Phase 4.4).
 - [ ] **Port remaining SpecForge improvements**: Check for additional commits after `507da3e`.

@@ -493,6 +493,49 @@ Combined 3 training GPUs with FULL_SHARD and CPU prefetch. Eval disabled (`datas
 
 ---
 
+## Phase 3: Acceptance Length (τ) Benchmark Matrix
+
+### Plan
+
+**Goal**: Measure τ (average accepted tokens per draft cycle) at training checkpoints to determine when training quality is sufficient for speculative decoding speedup.
+
+**Target**: τ ≥ 5.0 (each draft cycle produces ~5 accepted tokens → significant speedup over baseline)
+
+**Training config** (Test 7 — best throughput):
+- 3 GPU + FULL_SHARD + CPU prefetch (5.3 step/s × 3 samples/step)
+- Dataset: `perfectblend_50k.jsonl` (47,484 samples)
+- 6 epochs, save_interval=5000, eval disabled
+- Steps per epoch: ~15,828 (47,484 ÷ 3 samples/step)
+- Total steps: ~94,968
+
+**Checkpoint schedule**:
+
+| Checkpoint | Steps | Epoch | Est. Wall Time | Measurement |
+|------------|-------|-------|-----------------|-------------|
+| ckpt-5k | 5,000 | ~0.3 | ~16 min | τ, loss, inference tok/s |
+| ckpt-10k | 10,000 | ~0.6 | ~31 min | τ, loss, inference tok/s |
+| ckpt-15k | 15,000 | ~0.9 | ~47 min | τ, loss, inference tok/s |
+| epoch-1 | 15,828 | 1.0 | ~50 min | τ, loss, inference tok/s |
+
+**Measurements at each checkpoint**:
+1. **τ (acceptance length)**: Average accepted tokens per draft cycle via `torchspec.eval_entry`
+2. **Loss**: Training loss at checkpoint step
+3. **Inference speed**: Tokens/sec with DFlash speculative decoding vs baseline (target-only)
+4. **Comparison**: Side-by-side with Eagle3 inference at same target model
+
+**Baseline references**:
+- Target-only (no speculation): ~60 tok/s
+- Previous DFlash (step 18,001, pre-bugfix): τ = 1.86
+- Eagle3: τ = TBD (to be benchmarked for comparison)
+
+### Results
+
+| Checkpoint | Steps | Loss | τ | DFlash tok/s | Baseline tok/s | Speedup |
+|------------|-------|------|---|-------------|----------------|---------|
+| *(training in progress)* | | | | | | |
+
+---
+
 ## Commits
 
 | Hash | Description |
