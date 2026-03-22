@@ -1,29 +1,102 @@
-# DFlash RunPod Setup & Resume Guide
+# DFlash RunPod Setup & Training Guide
 
-> Updated for PyTorch 2.9.1 / SGLang 0.5.9 (2026-03-21)
+> Updated 2026-03-22. Covers both custom Docker image and manual setup.
+
+## Quick Start (Two Options)
+
+### Option A: Custom Docker Image (Recommended — <1 min setup)
+
+**1. Build & push image** (one-time, from your local machine):
+```bash
+cd /path/to/TorchSpec
+
+# Full image (~20GB) — Qwen3-8B pre-downloaded, instant pod start:
+docker build -t xingh3/torchspec-dflash:latest \
+  -f docker/sglang/v0.5.8.post1/Dockerfile.runpod .
+
+# Or slim image (~4GB) — model downloads at runtime (~5 min on pod):
+docker build --build-arg INCLUDE_MODEL=0 \
+  -t xingh3/torchspec-dflash:slim \
+  -f docker/sglang/v0.5.8.post1/Dockerfile.runpod .
+
+docker push xingh3/torchspec-dflash:latest
+docker push xingh3/torchspec-dflash:slim
+```
+
+**2. Create RunPod pod:**
+
+| Setting | Value |
+|---------|-------|
+| Container Image | `xingh3/torchspec-dflash:latest` (or `:slim`) |
+| GPUs | 4x H100 80GB |
+| Container Disk | **100 GB** |
+| Volume Disk | Optional (checkpoint persistence) |
+
+**3. On the pod** (Jupyter terminal or SSH):
+```bash
+cd /workspace
+git clone https://github.com/zhubohao911/TorchSpec.git
+cd TorchSpec && git checkout feature/dflash-training
+
+# Setup (auto-detects Docker image, skips pip installs):
+bash scripts/runpod_setup.sh
+
+# Launch training in tmux:
+source .env.runpod
+tmux new -s train
+bash scripts/runpod_phase_c.sh 2>&1 | tee /tmp/phase_c.log
+# Detach: Ctrl+B, then D
+```
+
+### Option B: Manual Setup (RunPod stock image — ~20 min setup)
+
+**1. Create RunPod pod:**
+
+| Setting | Value |
+|---------|-------|
+| Container Image | `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04` |
+| GPUs | 4x H100 80GB |
+| Container Disk | **100 GB** |
+| Volume Disk | Optional |
+
+**2. On the pod** (Jupyter terminal or SSH):
+```bash
+cd /workspace
+git clone https://github.com/zhubohao911/TorchSpec.git
+cd TorchSpec && git checkout feature/dflash-training
+
+# Full setup (installs all deps — takes ~20 min):
+bash scripts/runpod_setup.sh
+
+# Launch training in tmux:
+source .env.runpod
+tmux new -s train
+bash scripts/runpod_phase_c.sh 2>&1 | tee /tmp/phase_c.log
+# Detach: Ctrl+B, then D
+```
+
+---
 
 ## Pod Requirements
 
 | Spec | Value |
 |------|-------|
-| GPUs | 1x H100 80GB (minimum) or 4x for SGLang mode |
-| Container Disk | **100 GB** |
-| Volume Disk | Optional (checkpoint persistence only) |
-| Image | `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04` |
+| GPUs | 4x H100 80GB (1 inference + 3 training) |
+| Container Disk | **100 GB** (training needs ~30-40 GB) |
+| Volume Disk | Optional (checkpoint persistence across pods) |
 
 ## What Survives Pod Restart
 
 | Survives (`/workspace/`) | Lost (container disk) |
 |---|---|
-| Git repo directories (but `.py` files may appear deleted) | All pip packages |
-| Checkpoints, training data | System packages (libibverbs, etc.) |
-| HF model cache | Ray state, logs, inductor cache |
+| Git repo, checkpoints, training data | All pip packages (unless custom image) |
+| HF model cache | System packages (libibverbs, etc.) |
 
-> **Critical**: After restart, run `git restore .` first — git-tracked files may appear deleted.
+> **After restart**: Run `bash scripts/runpod_setup.sh` — it auto-detects what's missing.
 
-## Setup Steps
+## SSH Access
 
-**Step 0 — SSH** (requires `expect` for RunPod PTY):
+RunPod requires a pseudo-terminal. Use `expect`:
 ```bash
 expect -c '
 set timeout 60
@@ -34,122 +107,149 @@ interact
 '
 ```
 
-**Step 1 — Restore git files**:
+Or use the **Jupyter terminal** in the RunPod web UI (no SSH needed).
+
+---
+
+## Scripts Reference
+
+| Script | Purpose | When to run |
+|--------|---------|-------------|
+| `scripts/runpod_setup.sh` | Install deps, dataset, checkpoint | Once per new pod |
+| `scripts/runpod_phase_c.sh` | Launch/resume training | After setup |
+
+### `runpod_setup.sh` — What it does
+
+1. Pre-flight checks (GPU count, disk space)
+2. Restore git-tracked files (if pod was restarted)
+3. Install system libs: libibverbs, rdmacm, libnuma (Issue 3)
+4. Install SGLang 0.5.9 from source with `[all]` extras (Issues 2, 24)
+5. Apply SGLang speculative training patch
+6. Install TorchSpec
+7. Configure environment variables (Issues 23, 26)
+8. Setup HF cache symlink for Ray workers (Issue 19)
+9. Download PerfectBlend 50K dataset
+10. Download checkpoint from HF (for resume)
+11. Fix Mooncake binary permissions
+12. Clear stale caches
+13. Verify all imports
+
+> Auto-detects custom Docker image and skips Steps 4-7 (`SKIP_INSTALL=1`).
+
+### `runpod_phase_c.sh` — What it does
+
+1. Validates dataset exists
+2. Auto-detects checkpoint for resume (`training.load_path`)
+3. Sources `.env.runpod` for environment variables
+4. Launches training with YAML config (no CLI overrides for hyperparams)
+
+---
+
+## Training Configuration
+
+All hyperparameters are in `configs/sglang_qwen3_8b_dflash.yaml`:
+
+| Parameter | Value |
+|-----------|-------|
+| Target model | Qwen/Qwen3-8B |
+| Draft model | DFlash (1.05B trainable + 622M frozen embed) |
+| GPUs | 1 inference + 3 training (4x H100) |
+| FSDP | FULL_SHARD, bf16 reduce |
+| micro_batch_size | 1 |
+| accumulation_steps | 4 |
+| global_batch_size | 1 × 3(dp) × 4(accum) = 12 |
+| max_seq_length | 2048 |
+| num_epochs | 2 |
+| learning_rate | 6e-4 |
+| warmup_ratio | 0.04 |
+| prefetch_depth | 8 |
+| save_interval | 1000 (keep latest 1) |
+| num_anchors | 512, block_size | 16 |
+| target_layers | 5 |
+| precision | bf16 |
+
+---
+
+## Monitoring Training
+
 ```bash
-cd /workspace/TorchSpec && git restore .
+# Reattach to tmux session:
+tmux attach -t train
+
+# Or from another terminal/window:
+tail -f /tmp/phase_c.log                        # live output
+grep 'TIMING step=' /tmp/phase_c.log | tail -5  # step timing
+grep 'Training:' /tmp/phase_c.log | tail -3     # progress bar
 ```
 
-**Step 2 — System libraries**:
-```bash
-apt-get update -qq && apt-get install -y libibverbs-dev librdmacm-dev libnuma-dev && ldconfig
-```
+### tmux Cheat Sheet
 
-**Step 3 — SGLang from source** (pulls PyTorch 2.9.1 automatically):
-```bash
-cd /workspace/TorchSpec
-git -C _sglang checkout 0f2df9370a1de1b4fb11b071d39ab3ce2287a350
-git -C _sglang reset --hard HEAD
-pip3 install -e "_sglang/python[all]"
-rm -f _sglang/python/sglang/srt/speculative/spec_training_info.py
-cd _sglang && git apply /workspace/TorchSpec/patches/sglang/v0.5.8.post1/sglang.patch
-cd /workspace/TorchSpec
-```
+| Action | Keys |
+|--------|------|
+| Detach (leave running) | `Ctrl+B`, then `D` |
+| New window | `Ctrl+B`, then `C` |
+| Switch windows | `Ctrl+B`, then `0`/`1`/`2` |
+| Reattach | `tmux attach -t train` |
 
-> **Note**: Don't install PyTorch separately — SGLang `[all]` pulls the correct version. Don't install flashinfer separately — it's included in SGLang `[all]`.
+### What to Look For
 
-**Step 3.5 — Patch factory.py timeouts** (PyTorch 2.9+ needs longer CUDA init):
-```bash
-sed -i "s/timeout=30,/timeout=120,/g" torchspec/inference/factory.py
-```
+| Metric | Healthy | Problem |
+|--------|---------|---------|
+| step time | ~1.0 s/step | >2 s/step |
+| loss | Decreasing (10→3 over epoch 1) | Flat or increasing |
+| accuracy | Increasing (0→0.25 over epoch 1) | Stuck at 0 |
+| data_time | <0.7s | >1s consistently |
 
-**Step 4 — TorchSpec**:
-```bash
-cd /workspace/TorchSpec && pip3 install -e ".[dev]"
-```
-
-**Step 5 — Verify**:
-```bash
-python -c 'import torch; print(f"PyTorch {torch.__version__}, CUDA {torch.cuda.is_available()}")'
-python -c 'import sglang; print("SGLang OK")'
-python -c 'import torchspec; print("TorchSpec OK")'
-```
-
-**Step 6 — Restore checkpoint** (only if `/workspace/` was lost):
-```bash
-export HF_HOME=/workspace/.cache/huggingface
-huggingface-cli download Xingh3/qwen3-8b-dflash-checkpoint-phase-c \
-  --local-dir /workspace/TorchSpec/outputs/qwen3-8b-dflash-phase-c/checkpoints/
-```
-
-**Step 7 — Launch training with resume**:
-```bash
-export HF_HOME=/workspace/.cache/huggingface
-export PYTORCH_ALLOC_CONF=expandable_segments:True
-cd /workspace/TorchSpec
-
-# CRITICAL: training.load_path is REQUIRED for checkpoint resume.
-nohup python -m torchspec.train_entry \
-  --config configs/sglang_qwen3_8b_dflash.yaml \
-  training.micro_batch_size=4 \
-  training.draft_accumulation_steps=1 \
-  training.num_epochs=4 \
-  training.max_seq_length=2048 \
-  training.learning_rate=6e-4 \
-  training.warmup_ratio=0.04 \
-  training.max_grad_norm=1.0 \
-  training.save_per_epoch=true \
-  training.save_interval=1000 \
-  training.max_checkpoints=1 \
-  training.dflash_num_anchors=256 \
-  training.load_path=./outputs/qwen3-8b-dflash-phase-c/checkpoints \
-  dataset.train_data_path=/workspace/data/perfectblend_50k.jsonl \
-  dataset.eval_data_path=null \
-  dataset.eval_interval=0 \
-  inference.inference_num_gpus=2 \
-  inference.inference_num_gpus_per_engine=1 \
-  inference.inference_num_gpus_per_node=2 \
-  output_dir=./outputs/qwen3-8b-dflash-phase-c \
-  > /tmp/phase_c_resume.log 2>&1 &
-```
-
-## Verifying Resume
-
-Check log after ~5 min (model loading takes ~3 min): `tail -20 /tmp/phase_c_resume.log`
-
-- **Good**: step 18001+/23704, loss 2.7-4.1, accuracy 0.20-0.32
-- **Bad**: step 0/23704, loss 10-12, accuracy 0.000 → check `training.load_path`
-
-Resume mechanism: `checkpoint.py` reads `training.load_path` → finds `latest_checkpointed_iteration.txt` → loads model/optimizer/lr_scheduler/rng → sets `global_step` → `loop.py` skips first N steps.
+---
 
 ## After Training Completes
 
-1. **Extract checkpoint**:
-   ```bash
-   python scripts/extract_dflash_checkpoint.py \
-     --checkpoint_dir outputs/qwen3-8b-dflash-phase-c/checkpoints/iter_NNNNNNN \
-     --output /tmp/dflash_draft_phase_c.pt
-   ```
+**1. Extract checkpoint:**
+```bash
+python scripts/extract_dflash_checkpoint.py \
+  --checkpoint_dir outputs/qwen3-8b-dflash/checkpoints/iter_NNNNNNN \
+  --output /tmp/dflash_draft.pt
+```
 
-2. **Benchmark τ**:
-   ```bash
-   python scripts/benchmark_dflash_inference.py \
-     --target_model Qwen/Qwen3-8B \
-     --draft_checkpoint /tmp/dflash_draft_phase_c.pt \
-     --num_prompts 20 --max_new_tokens 256
-   ```
+**2. Benchmark τ:**
+```bash
+python scripts/benchmark_dflash_inference.py \
+  --target_model Qwen/Qwen3-8B \
+  --draft_checkpoint /tmp/dflash_draft.pt \
+  --num_prompts 20 --max_new_tokens 256
+```
 
-3. **Target**: τ ≥ 3.0, speedup ≥ 1.5x over baseline.
+**3. Target**: τ ≥ 3.0, speedup ≥ 1.5x over baseline.
+
+**4. Upload checkpoint to HF:**
+```bash
+huggingface-cli upload Xingh3/dflash-qwen3-8b-STEP \
+  outputs/qwen3-8b-dflash/checkpoints/iter_NNNNNNN/ \
+  --repo-type model
+```
+
+---
+
+## Resume from Checkpoint
+
+`runpod_phase_c.sh` handles this automatically. It checks for existing checkpoints in `outputs/qwen3-8b-dflash/checkpoints/` and sets `training.load_path`.
+
+If starting a fresh pod, `runpod_setup.sh` downloads the latest checkpoint from `Xingh3/dflash-qwen3-8b-1k`.
+
+Resume mechanism: `checkpoint.py` reads `training.load_path` → finds `latest_checkpointed_iteration.txt` → loads model/optimizer/lr_scheduler/rng → sets `global_step` → `loop.py` skips first N steps.
+
+---
 
 ## Common Pitfalls
 
 | Pitfall | Symptom | Fix |
 |---------|---------|-----|
-| Missing `training.load_path` | Starts from step 0 | Add `training.load_path=./outputs/.../checkpoints` |
-| Git files deleted after restart | `No module named torchspec` | `git restore .` |
-| Missing RDMA libs | `ImportError: libibverbs.so.1` | `apt-get install -y libibverbs-dev librdmacm-dev libnuma-dev` |
-| PyTorch too old (2.4.1) | FlexAttention import errors | Let SGLang pull 2.9.1 (Step 3) |
-| SGLang not installed | `No module named 'sglang'` | Step 3 |
-| SGLang patch not applied | `unexpected keyword argument 'enable_aux_hidden_states'` | Remove `spec_training_info.py` then `git apply` |
-| Standard SSH fails | `Your SSH client doesn't support PTY` | Use `expect` (Step 0) |
-| Ray actor timeout (30s) | `GetTimeoutError` during engine init | Patch factory.py timeouts (Step 3.5) |
-| Old env var name | `PYTORCH_CUDA_ALLOC_CONF is deprecated` | Use `PYTORCH_ALLOC_CONF` |
+| Missing deps on stock image | `No module named 'sglang'` | Run `bash scripts/runpod_setup.sh` |
+| Git files deleted after restart | `No module named torchspec` | `git restore .` (setup script does this) |
+| Missing RDMA libs | `ImportError: libibverbs.so.1` | Setup script installs these (Issue 3) |
+| SGLang patch not applied | `unexpected keyword argument 'enable_aux_hidden_states'` | Re-run setup script |
+| Standard SSH fails | `Your SSH client doesn't support PTY` | Use `expect` or Jupyter terminal |
+| Ray actor timeout (30s) | `GetTimeoutError` during engine init | Setup patches factory.py (Issue 25) |
+| Container disk too small | `No space left on device` | Use 100GB container disk (Issue 5) |
+| Training starts from step 0 | Loss ~10, accuracy 0 | Check checkpoint download in setup |
+| Slow training (~1 s/step) | Expected with Mooncake TCP | See Issue 29 in dflash_issues.md |
