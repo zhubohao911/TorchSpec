@@ -165,6 +165,14 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
             buffer_ptrs, sizes = self._stage_tensors_into_buffer(buf, tensors)
             self._do_sync_batch_put(keys, buffer_ptrs, sizes)
         elif self._host_buffer_pool is None or self._async_put_manager is None:
+            if self.config.protocol == "nvlink":
+                raise RuntimeError(
+                    "NVLink put() failed: GPU Direct send buffer is not "
+                    "available. NVLink transport requires all memory to be GPU "
+                    "memory, so host buffer fallback is disabled. Ensure GPU "
+                    "Direct RDMA initialized successfully and the send buffer "
+                    "was registered with the NVLink transport."
+                )
             raise RuntimeError(
                 "put() requires either GPU Direct (enable_gpu_direct=True) or "
                 "async host-buffer puts (async_put_pool_size > 0). "
@@ -334,6 +342,15 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
                 logger.warning("GPUDirect batch_get_into failed; falling back to host buffer path.")
 
         if tensor_map is None:
+            if self.config.local_buffer_size == 0:
+                raise RuntimeError(
+                    "GPU Direct batch_get_into failed and no host buffer "
+                    "fallback is available (local_buffer_size=0). This is "
+                    "expected when using NVLink transport, which requires all "
+                    "buffers to be GPU memory. Check that GPU Direct RDMA is "
+                    "properly initialized and the receive buffer is large "
+                    "enough for the requested tensors."
+                )
             tensor_map = self._get_tensors_via_host_buffer(keys, tensor_specs, device)
             logger.debug("Using host buffer path (TCP)")
         logger.debug("Retrieved Eagle3 tensors with base key: %s", key)

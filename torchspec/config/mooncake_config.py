@@ -18,11 +18,14 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Tuple
 
 from torchspec.transfer.mooncake.helpers import calculate_eagle3_buffer_size
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -95,6 +98,28 @@ class MooncakeConfig:
 
         if self.async_put_pool_size is None:
             self.async_put_pool_size = 1
+
+        # NVLink transport requires GPU Direct and cannot use host buffers.
+        # Auto-configure to avoid the NVLink registerMemory rejection of host
+        # memory (mooncake NVLink transport only accepts cudaMemoryTypeDevice).
+        if self.protocol == "nvlink":
+            if not self.enable_gpu_direct:
+                logger.warning(
+                    "NVLink protocol requires GPU Direct; enabling automatically."
+                )
+                self.enable_gpu_direct = True
+            if self.local_buffer_size != 0:
+                logger.warning(
+                    "NVLink protocol does not support host memory buffers; "
+                    "setting local_buffer_size=0."
+                )
+                self.local_buffer_size = 0
+            if self.async_put_pool_size > 0:
+                logger.warning(
+                    "NVLink uses synchronous GPU Direct puts; "
+                    "setting async_put_pool_size=0."
+                )
+                self.async_put_pool_size = 0
 
         if self.gpu_buffer_size is None and self.enable_gpu_direct:
             # Size for a single get() call: get_batch_size samples (typically
