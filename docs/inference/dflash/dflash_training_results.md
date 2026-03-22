@@ -422,26 +422,37 @@ Fixed: Background thread stages data on CPU only. Main thread moves to GPU synch
 
 **200-step stability confirmed**: Steady ~6.5-7.0 step/s with no degradation. Loss 12.3→0.39, accuracy 0%→93.5%. Data transfer fully overlapped with compute — step time ≈ compute time. Commit `bb922ba`.
 
-#### Test 6: NVLink Intra-Node Transport (mooncake.protocol=nvlink_intra) — FAILED
+#### Test 6: NVLink Intra-Node Transport (mooncake.protocol=nvlink_intra) — FAILED (Architectural Mismatch)
 
-Attempted to use Mooncake's native `nvlink_intra` protocol for GPU-to-GPU transfer via NVLink IPC. **Failed**: Mooncake v0.3.10 pip wheel was not compiled with NVLink transport support.
+Three progressive issues were encountered and resolved, revealing a fundamental limitation:
 
+**Issue 1 — pip wheel lacks NVLink transport** (resolved):
 ```
 E0322 04:11:07.613032 client_service.cpp:413] unsupported_protocol protocol=nvlink_intra
 ```
+Fix: Built Mooncake from source with `-DUSE_INTRA_NVLINK=ON -DUSE_CUDA=ON`.
 
-**Finding**: The NVLink transport code exists in Mooncake source (C++ classes `NvlinkTransport`, `IntraNodeNvlinkTransport`) but the pip wheel build doesn't include it. Building from source with NVLink support may require specific cmake flags.
+**Issue 2 — `client_service.cpp` protocol switch missing `nvlink_intra`** (resolved):
+The mooncake-store's `client_service.cpp` had a hardcoded if-else chain for protocols (tcp, rdma, ascend, ubshmem, cxl) that did not include `nvlink_intra`. Patched to add the case, rebuilt, and replaced both `store.so` and `engine.so`.
 
-**Mooncake supported transports (from source)**:
+**Issue 3 — NVLink requires GPU memory, but mooncake-store uses host memory** (fundamental):
+```
+E0322 05:07:54.569949 intranode_nvlink_transport.cpp:298] Unsupported memory type, 0x701413ff4040 0
+```
+The `nvlink_intra` transport checks `cudaPointerGetAttributes` and requires `cudaMemoryTypeDevice` (GPU memory). The mooncake-store allocates shared memory (SHM) buffers on the host — memory type `0` (`cudaMemoryTypeUnregistered`). NVLink IPC only works for GPU-to-GPU transfers.
 
-| Protocol | Status on RunPod | Potential Speed |
-|----------|-----------------|-----------------|
-| `tcp` | **Currently used** | ~0.3 GB/s (~145ms/40MB) |
-| `rdma` | No IB hardware | ~25-100 GB/s |
-| `nvlink_intra` | Not compiled in pip wheel | ~478 GB/s (<0.1ms) |
-| `nvlink` (MNNVL) | Needs fabric support | ~478 GB/s |
+**Conclusion**: The `nvlink_intra` transport is designed for SGLang's disaggregated prefill/decode KV cache transfers (GPU↔GPU). The mooncake-store data pipeline (training data) uses host memory buffers, which fundamentally cannot use NVLink. This is not fixable via configuration — it would require the store to allocate GPU-resident buffers.
 
-**Next**: Build Mooncake from source with `-DENABLE_NVLINK=ON` or equivalent flag.
+**Mooncake transport viability for training data**:
+
+| Protocol | Works with Store? | Notes |
+|----------|------------------|-------|
+| `tcp` | **Yes (current)** | ~0.3 GB/s, ~145ms/40MB |
+| `rdma` | Possible | Needs InfiniBand hardware (RunPod lacks it) |
+| `nvlink_intra` | **No** | Requires GPU memory; store uses host memory |
+| `nvlink` (MNNVL) | **No** | Same GPU memory requirement |
+
+**Recommendation**: TCP + CPU prefetch (Test 5b) already eliminates the data pipeline bottleneck entirely (data_time < compute_time). NVLink transport is not needed for training throughput.
 
 #### Updated Configuration Comparison
 
@@ -455,7 +466,30 @@ E0322 04:11:07.613032 client_service.cpp:413] unsupported_protocol protocol=nvli
 | Test 4 (2T+2I) | 2+2I | FULL_SHARD | No | 1.1 | 400 | 200 | 9.5 hr |
 | Test 5a | 2 | FULL_SHARD | GPU | 1.0 | 11-46 | 200-300 | N/A (worse) |
 | **Test 5b** | **2** | **FULL_SHARD** | **CPU** | **6.8** | **1-23** | **92-115** | **1.5 hr** |
-| Test 6 (NVLink) | 2 | FULL_SHARD | No | N/A | N/A | N/A | Build needed |
+| Test 6 (NVLink) | 2 | FULL_SHARD | No | N/A | N/A | N/A | Not viable (store uses host mem) |
+| **Test 7** | **3** | **FULL_SHARD** | **CPU** | **5.3** | **1-9** | **118-148** | **~1.3 hr** |
+
+#### Test 7: 3 GPU + FULL_SHARD + CPU Prefetch (30 steps)
+
+Combined 3 training GPUs with FULL_SHARD and CPU prefetch. Eval disabled (`dataset.eval_data_path=null`).
+
+| Metric | Value |
+|--------|-------|
+| step/s | 5.2-5.6 (steady state) |
+| step_time | 127-165ms |
+| data_time | 1-9ms |
+| compute_time | 118-148ms |
+| forward | 43-69ms |
+| backward | 52-64ms |
+| optimizer | 15-16ms |
+| samples/step | 3 (1 per GPU) |
+| effective throughput | 15.9 samples/s (5.3 × 3) |
+
+**Comparison with Test 5b (2 GPU + CPU prefetch)**:
+- Per-step: 5.3 vs 6.8 step/s (3 GPU is 22% slower per step due to FSDP overhead)
+- But each step processes 3 samples vs 2 → effective throughput: 15.9 vs 13.6 samples/s
+- **3 GPU is ~17% faster** in total wall clock time (~1.3 hr vs ~1.5 hr)
+- Loss progression: 12.3 → 6.3 in 30 steps (similar trajectory to 2 GPU)
 
 ---
 
