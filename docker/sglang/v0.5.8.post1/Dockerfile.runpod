@@ -84,8 +84,10 @@ snapshot_download('Qwen/Qwen3-8B', cache_dir='$HF_HOME')" && \
 
 # ── Layer 5: TorchSpec code and dependencies (changes most frequently) ──
 COPY . /root/torchspec
+# Note: [fa] extra (flash-attention-cute) is excluded — has metadata name mismatch
+# and is not needed for DFlash training (FlexAttention is used instead)
 RUN pip uninstall nvidia-cutlass-dsl nvidia-cutlass-dsl-libs-base -y 2>/dev/null; \
-    cd /root/torchspec && pip install --no-cache-dir -e ".[fa,dev]"
+    cd /root/torchspec && pip install --no-cache-dir -e ".[dev]"
 
 # ── Layer 6: Mooncake binary permission fix ──
 # From Dockerfile.runpod (commit 7813f79): mooncake_master needs +x
