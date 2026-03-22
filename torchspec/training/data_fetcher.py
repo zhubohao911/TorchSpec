@@ -105,9 +105,13 @@ class MooncakeDataset(IterableDataset):
             device=self.device,
         )
 
-        self._cleanup_mooncake_data(sample)
+        # Clone tensors before cleanup: to_tensor_dict() returns views into
+        # Mooncake buffers. With batch_size>1, the collator holds sample N
+        # while waiting for sample N+1. If we free the buffer now, the buffer
+        # may be reused by new data, corrupting the held tensors.
+        result = {k: v.clone() for k, v in tensors.to_tensor_dict().items()}
 
-        result = tensors.to_tensor_dict()
+        self._cleanup_mooncake_data(sample)
         if sample.packed_loss_mask is not None:
             result["packed_loss_mask"] = sample.packed_loss_mask
         if sample.last_turn_loss_only is not None:
