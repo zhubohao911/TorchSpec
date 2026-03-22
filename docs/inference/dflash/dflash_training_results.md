@@ -119,9 +119,11 @@ PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
 
 τ = 1.86 is significantly below target. Investigation identified two training quality bugs (see [Issues](dflash_issues.md#training-quality-bugs-found-in-session-12)).
 
-### PyTorch 2.9.1 Speed Regression
+### PyTorch 2.9.1 Speed Regression — RESOLVED
 
-After PyTorch 2.6.0→2.9.1 migration: **2.1 step/s → 0.75 step/s** (3x slower). No code-level fix found — regression is at the PyTorch runtime level. See [Issue 26](dflash_issues.md#issue-26-pytorch-291-speed-regression-3x-slower).
+After PyTorch 2.6.0→2.9.1 migration: **2.1 step/s → 0.75 step/s** (3x slower).
+
+**Fix**: `export TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS=ATEN,TRITON` — restored speed to ~5 step/s in colocate 1-GPU mode. See [Issue 26](dflash_issues.md#issue-26-pytorch-291-speed-regression-3x-slower--resolved).
 
 ### Checkpoint & Backup
 
@@ -133,6 +135,47 @@ After PyTorch 2.6.0→2.9.1 migration: **2.1 step/s → 0.75 step/s** (3x slower
 | `/tmp/`, `/root/` (container disk) | No | No |
 | `/workspace/` (volume) | Yes | No |
 | HuggingFace Hub | Yes | Yes |
+
+---
+
+## Phase D: Bug Fixes & Smoke Test (2026-03-22)
+
+### Environment
+
+- torch 2.9.1 + sglang 0.5.9 + CUDA 12.4
+- `TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS=ATEN,TRITON`
+- 1x H100 (colocate mode)
+- Data: `perfectblend_50k.jsonl`
+
+### Bug Fixes Applied
+
+1. **Bug 1 — Zero-loss dummy** (commit `f3311e4`): Replaced silent zero-gradient fallback with `raise ValueError` in `dflash.py:130-134`
+2. **`min_loss_tokens` pipeline** (commit `f3311e4`): Plumbed `min_loss_tokens` from config → data loader → preprocessing. Set `min_loss_tokens: 32` (2×block_size) in DFlash configs.
+3. **SpecForge deep diff**: All 3 critical file pairs verified to match. No additional SpecForge fixes needed.
+
+### Unit Tests
+
+54/54 pass. 3 new tests added:
+- `test_loss_decay_weights` — verifies `exp(-(k-1)/γ)` weighting
+- `test_label_alignment_same_position` — verifies same-position prediction (not shifted)
+- `test_anchor_loss_excluded` — verifies position 0 (anchor) has zero loss weight
+
+### Smoke Test (30 steps, 1-GPU colocate)
+
+| Step | Loss | Accuracy | Speed |
+|------|------|----------|-------|
+| 1 | 12.70 | 0.000 | warmup |
+| 10 | 11.08 | 0.000 | ~1.2 step/s |
+| 20 | 9.30 | 0.091 | ~3.6 step/s |
+| 30 | 8.55 | 0.065 | ~5.0 step/s |
+
+Loss starts ~12.7, drops monotonically. No NaN, no zero-loss steps. Speed ~5 step/s after warmup (exceeds Phase C baseline of 2.1 step/s on torch 2.6).
+
+### Next Steps
+
+- Speed benchmark S1-S6 in 4-GPU SGLang mode (Phase 2.2)
+- Fresh training from scratch with bug fixes, 6 epochs on 50K data (Phase 3)
+- Measure τ at epoch boundaries to track progression
 
 ---
 
