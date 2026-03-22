@@ -174,24 +174,27 @@ CUDA context initialization inside Ray actors takes longer with PyTorch 2.9.1, e
 
 **Note**: Local pod patch, not committed. The `init_timeout` config (default 300s) only applies to the engine `.init()` call, not the pre-init `find_free_port` calls.
 
-### Issue 26: PyTorch 2.9.1 Speed Regression (3x Slower)
+### Issue 26: PyTorch 2.9.1 Speed Regression (3x Slower) — RESOLVED
 
 Training at 1.5-1.7 s/step with torch 2.9.1 vs 0.48 s/step with torch 2.6.0. GPU utilization ~20-30% average with bursty compute and long idle periods.
 
-**Optimization attempts** (none helped):
+**Root cause**: TorchInductor GEMM backend selection. PyTorch 2.9.1's autotuner fails to select valid backends for FlexAttention kernels.
+
+**Solution**:
+```bash
+export TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS=ATEN,TRITON
+```
+
+This single env var fixes both:
+1. The 3x speed regression (restored to ~5 step/s in colocate 1-GPU mode)
+2. The `NoValidChoicesError` in FlexAttention backward pass ([Issue 10](dflash_issues.md#issue-10-flexattention-inductor-novalidchoiceserror))
+
+**Previous unsuccessful attempts** (before finding the fix):
 1. Remove `@torch.compile(dynamic=True)` from DFlashRMSNorm — no change
 2. Use `enable_gqa=True` in FlexAttention — no change
 3. Use `create_block_mask` directly (remove compiled wrapper) — no change
 4. `TORCHINDUCTOR_MAX_AUTOTUNE=1` + `COORDINATE_DESCENT_TUNING=1` — no change
 5. `TORCH_COMPILE_DISABLE=1` (eager mode) — crash (SGLang requires compilation)
-
-**Root cause**: PyTorch 2.9.1 runtime-level regression (TorchInductor codegen, FSDP2 behavior, NCCL/CUDA runtime, or Triton 3.5.1→3.6.0).
-
-**Conclusion**: No code-level fix found. Future mitigation options:
-- Pin to torch 2.6.0 if SGLang compatibility allows
-- Profile with `torch.profiler` for exact kernel-level regression
-- Test torch 2.7/2.8 as intermediate versions
-- Try `torch.compile(mode="max-autotune-no-cudagraphs")` for FlexAttention
 
 ---
 
@@ -205,7 +208,7 @@ Training at 1.5-1.7 s/step with torch 2.9.1 vs 0.48 s/step with torch 2.6.0. GPU
 
 **Impact**: If any batch has no valid anchor positions (short sequences or mostly-masked data), TorchSpec silently produces zero gradients, wasting compute and diluting gradient signal.
 
-**Status**: Not yet fixed.
+**Status**: **Fixed** (commit `f3311e4`). Replaced silent zero-loss return with `raise ValueError`. Added `min_loss_tokens` config parameter to filter short sequences at data loading time.
 
 ### Bug 2: Anchor filtering by anchor position's mask (`dflash.py:126`)
 

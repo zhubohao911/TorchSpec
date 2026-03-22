@@ -20,11 +20,11 @@
 |--------|-------|--------|
 | Phase C τ (step 18,001) | 1.86 | ≥ 5.0 |
 | Phase C speedup | 1.27x | ≥ 3.0x |
-| Training speed (torch 2.6) | 2.1 step/s | — |
-| Training speed (torch 2.9.1) | 0.75 step/s | ≥ 2.0 step/s |
-| Known bugs | 2 ([Bug 1](dflash_issues.md#bug-1-zero-loss-dummy-on-empty-anchors-dflashpy128-134), [Bug 2](dflash_issues.md#bug-2-anchor-filtering-by-anchor-positions-mask-dflashpy126)) | 0 |
+| Training speed (torch 2.9.1, post-fix) | ~5 step/s (colocate 1GPU) | ≥ 2.0 step/s |
+| Known bugs | 0 (Bug 1 fixed, Bug 2 matches SpecForge) | 0 |
 | Latest checkpoint | `iter_0018001` ([details](dflash_training_results.md#checkpoint--backup)) | — |
-| PyTorch regression | 3x slower on 2.9.1 ([Issue 26](dflash_issues.md#issue-26-pytorch-291-speed-regression-3x-slower)) | Resolve or pin 2.6 |
+| PyTorch regression | **Resolved** — `TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS=ATEN,TRITON` fixes it | ✓ |
+| Environment | torch 2.9.1 + sglang 0.5.9 + 4x H100 | — |
 
 ### Paper Reference — DFlash(16) on Qwen3-8B (Temperature=0)
 
@@ -48,101 +48,88 @@ Our implementation must match or approach these numbers. τ < 5.0 indicates impl
 **Priority**: Must complete before any benchmark runs.
 **Tracking**: [Pending Work — Active Bug Fixes](dflash_pending_work.md#active--bug-fixes)
 
-### 1.1 Fix Zero-Loss Dummy ([Bug 1](dflash_issues.md#bug-1-zero-loss-dummy-on-empty-anchors-dflashpy128-134))
+### 1.1 Fix Zero-Loss Dummy ([Bug 1](dflash_issues.md#bug-1-zero-loss-dummy-on-empty-anchors-dflashpy128-134)) — DONE
 
-**File**: `torchspec/models/dflash.py:128-134`
+**File**: `torchspec/models/dflash.py:130-134`
 
-Replace silent zero-loss fallback with proper error:
-```python
-# Current (broken): silently returns zero gradients
-if max_n <= 0:
-    anchors = torch.zeros(bsz, 1, ...)
-    keep_mask = torch.zeros(bsz, 1, ...)
-    return anchors, keep_mask
+**Fix applied** (commit `f3311e4`): Replaced silent zero-loss fallback with `raise ValueError`, matching SpecForge exactly.
 
-# Fix: match SpecForge — fail loudly on bad data
-if max_n <= 0:
-    raise ValueError(
-        f"No valid anchor positions found (max_anchor={max_anchor}, "
-        f"block_size={self.block_size}). Preprocess data to ensure "
-        f"sequences have at least 2*block_size loss-masked tokens."
-    )
-```
+**Additional fix**: Plumbed `min_loss_tokens` config parameter through the data pipeline (`DatasetConfig` → `load_conversation_dataset` → `_init_tokenize_worker` → `preprocess_conversations`) so sequences with < 2×block_size supervised tokens are filtered at data loading time. Added `min_loss_tokens: 32` to both DFlash YAML configs. This is the data-level guard that SpecForge uses (line 217-224 of `scripts/train_dflash.py`).
 
-**Impact**: Any batch with no valid anchor positions (short sequences, mostly-masked data) silently produces zero gradients — wasting compute and diluting gradient signal across the entire training run.
+### 1.2 Fix Anchor Filtering ([Bug 2](dflash_issues.md#bug-2-anchor-filtering-by-anchor-positions-mask-dflashpy126)) — SKIPPED (matches SpecForge)
 
-### 1.2 Fix Anchor Filtering ([Bug 2](dflash_issues.md#bug-2-anchor-filtering-by-anchor-positions-mask-dflashpy126))
+Same pattern exists in SpecForge (`specforge/core/dflash.py:102`). Impact is reduced anchor diversity near prompt→completion boundaries, not incorrect gradients. Priority is SpecForge parity first; can revisit after reaching τ ≥ 5.0.
 
-**File**: `torchspec/models/dflash.py:126`
-
-Current code filters anchors by anchor position's `loss_mask`. Should also consider whether the block's label positions have valid `loss_mask`.
-
-```python
-# Current: only checks anchor position
-valid = loss_mask[:, : max_anchor + 1] > 0.5
-
-# Improved: check that at least 1 label in block has loss_mask=1
-# (anchor+1 through anchor+block_size-1 should overlap with loss_mask=1 region)
-```
-
-**Note**: Same pattern exists in SpecForge — impact is reduced anchor diversity near prompt→completion boundaries, not incorrect gradients.
-
-### 1.3 Unit Test Checklist
+### 1.3 Unit Test Checklist — ALL PASS (54/54 on pod, 2026-03-22)
 
 | Test | Description | Pass? |
 |------|-------------|-------|
-| `test_anchor_sampling_valid` | No samples produce zero anchors on perfectblend data | |
-| `test_block_causal_mask` | Mask matches SpecForge's expected pattern | |
-| `test_loss_decay_weights` | `w_k = exp(-(k-1)/7.0)` for block_size=16 | |
-| `test_label_alignment` | Labels at positions `anchor+0..anchor+block_size-1` (same-position) | |
-| `test_context_mask_strict_lt` | Context mask: `kv_idx < anchor_pos` (not `<=`) | |
-| `test_anchor_loss_excluded` | Position 0 in block (anchor) has zero loss weight | |
-| `test_original_loss_mask` | Loss mask applied at label positions, not anchor positions | |
-| `test_short_sequence_error` | Sequences with < 2*block_size tokens raise ValueError | |
+| `test_anchor_sampling_valid` | No samples produce zero anchors on perfectblend data | ✅ (`test_basic_sampling`, `test_respects_loss_mask`) |
+| `test_block_causal_mask` | Mask matches SpecForge's expected pattern | ✅ (`test_block_internal_visibility`) |
+| `test_loss_decay_weights` | `w_k = exp(-(k-1)/7.0)` for block_size=16 | ✅ (new, commit `f3311e4`) |
+| `test_label_alignment` | Labels at positions `anchor+0..anchor+block_size-1` (same-position) | ✅ (`test_label_alignment_same_position`, new) |
+| `test_context_mask_strict_lt` | Context mask: `kv_idx < anchor_pos` (not `<=`) | ✅ (`test_context_causal`) |
+| `test_anchor_loss_excluded` | Position 0 in block (anchor) has zero loss weight | ✅ (new, commit `f3311e4`) |
+| `test_original_loss_mask` | Loss mask applied at label positions, not anchor positions | ✅ (`test_loss_mask_at_label_positions`) |
+| `test_short_sequence_error` | Sequences with < 2*block_size tokens raise ValueError | ✅ (updated, commit `f3311e4`) |
 
-### 1.4 Smoke Test (10 steps)
+### 1.4 Smoke Test (30 steps) — PASS (2026-03-22)
 
 ```bash
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+export TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS=ATEN,TRITON
 python -m torchspec.train_entry \
   --config configs/hf_qwen3_8b_dflash_1gpu.yaml \
   training.num_epochs=1 \
-  dataset.train_data_path=../examples/data/sample_conversations.jsonl \
+  dataset.train_data_path=/workspace/data/perfectblend_50k.jsonl \
   dataset.eval_data_path=null dataset.eval_interval=0
 ```
 
-**Expected**: Loss starts ~12-13, drops within 10 steps. No NaN, no zero-loss steps.
+**Results** (torch 2.9.1, sglang 0.5.9, 1x H100 colocate):
 
-### 1.5 SpecForge Deep Diff
+| Step | Loss | Accuracy | Speed |
+|------|------|----------|-------|
+| 1 | 12.70 | 0.000 | warmup |
+| 10 | 11.08 | 0.000 | ~1.2 step/s |
+| 20 | 9.30 | 0.091 | ~3.6 step/s |
+| 30 | 8.55 | 0.065 | ~5.0 step/s |
 
-Before benchmarking, do a line-by-line diff of these critical code paths against SpecForge HEAD:
+- ✅ Loss starts ~12.7, drops monotonically
+- ✅ No NaN, no zero-loss steps (Bug 1 fix working)
+- ✅ Accuracy starting to increase by step 20
+- ✅ Speed ~5 step/s after warmup (exceeds target)
 
-| TorchSpec File | SpecForge File | Focus |
-|----------------|----------------|-------|
-| `torchspec/models/dflash.py` | `specforge/core/dflash.py` | Mask creation, anchor sampling, loss computation |
-| `torchspec/models/draft/dflash.py` | `specforge/modeling/draft/dflash.py` | Dual-source KV attention, W_proj |
-| `torchspec/training/dflash_trainer.py` | `scripts/train_dflash.py` | Training loop, optimizer, FSDP setup |
+### 1.5 SpecForge Deep Diff — DONE (2026-03-22)
 
-Check for any additional SpecForge commits after `507da3e` that may contain further fixes.
+Line-by-line comparison of all three critical file pairs completed:
+
+| TorchSpec File | SpecForge File | Focus | Result |
+|----------------|----------------|-------|--------|
+| `torchspec/models/dflash.py` | `specforge/core/dflash.py` | Mask creation, anchor sampling, loss computation | ✅ Match |
+| `torchspec/models/draft/dflash.py` | `specforge/modeling/draft/dflash.py` | Dual-source KV attention, W_proj | ✅ Match |
+| `torchspec/training/dflash_trainer.py` | `scripts/train_dflash.py` | Training loop, optimizer, FSDP setup | ✅ Match (FSDP2 vs FSDP1 is intentional) |
+
+**Verified**: No SpecForge commits after `507da3e` modified dflash files. All critical code paths match: mask creation, anchor sampling, label alignment (same-position), loss computation (CE + decay), context projection, dual-source KV attention, `build_target_layer_ids`, RoPE application.
+
+**Only gap found**: `min_loss_tokens` data filtering — SpecForge filters at data load time but TorchSpec wasn't plumbing the parameter. Fixed in commit `f3311e4`.
 
 ---
 
 ## Phase 2: Training Speed Benchmark
 
 **Goal**: Measure training throughput across configurations and identify optimal setup.
-**Known blocker**: [Issue 26](dflash_issues.md#issue-26-pytorch-291-speed-regression-3x-slower) — PyTorch 2.9.1 is 3x slower than 2.6.0.
 
-### 2.1 Resolve PyTorch Speed Regression (Pre-requisite)
+### 2.1 Resolve PyTorch Speed Regression — RESOLVED (2026-03-22)
 
-The 3x speed regression (2.1 → 0.75 step/s) on PyTorch 2.9.1 is the single biggest obstacle to fast training. All speed experiments below assume this is resolved or worked around.
+The 3x speed regression (2.1 → 0.75 step/s) on PyTorch 2.9.1 was caused by TorchInductor GEMM backend selection. Fixed with:
 
-| Option | Approach | Risk |
-|--------|----------|------|
-| **A — Pin torch 2.6.0** | `pip install torch==2.6.0+cu124` + compatible SGLang | SGLang may require 2.9.1 |
-| **B — Test torch 2.7/2.8** | Try intermediate versions | Unknown compatibility |
-| **C — Profile 2.9.1** | `torch.profiler` to find exact kernel regression | May not be fixable |
-| **D — Compile mode tuning** | `mode="max-autotune-no-cudagraphs"` for FlexAttention | Untested |
+```bash
+export TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS=ATEN,TRITON
+```
 
-**Also pending**: [Commit factory.py timeout fix](dflash_pending_work.md#active--code-improvements) (30s → 120s for PyTorch 2.9+ Ray actor init).
+This resolves both the speed regression AND the `NoValidChoicesError` in FlexAttention backward pass. Training speed is now ~5 step/s in colocate 1-GPU mode (exceeds torch 2.6 baseline of 2.1 step/s).
+
+**Environment**: torch 2.9.1 + sglang 0.5.9 (latest, matching SpecForge commit `961ca7c`).
 
 ### 2.2 Baseline Speed Test (100 steps each)
 
@@ -157,7 +144,7 @@ All tests use: 4x H100, 2 inference + 2 training, `perfectblend_50k.jsonl`
 | S5 | 4 | 1 | 256 | 2048 | 8 | ~3.0+ |
 | S6 | 8 | 1 | 128 | 2048 | 8 | ~3.5+ |
 
-Expected speeds assume torch 2.6 or resolved regression. See [Phase C speed optimization](dflash_training_results.md#speed-optimization) for prior measurements.
+Expected speeds based on torch 2.6 measurements. With torch 2.9.1 + env var fix, speeds may differ — re-benchmark needed. See [Phase C speed optimization](dflash_training_results.md#speed-optimization) for prior measurements.
 
 **Launch template** (e.g., config S3):
 ```bash
@@ -257,7 +244,7 @@ Quick-iteration checkpoints to understand τ progression over time:
 | 3 hr | ~22,680 | 5.5-6.0 | Yes — near paper-level |
 | 5 hr | ~37,500 | 5.5-6.5 | Yes — full training (6 epochs on 50K) |
 
-**Note**: Step counts assume torch 2.6 speed (2.1 step/s). With torch 2.9.1 regression (0.75 step/s), multiply wall-clock times by ~2.8x.
+**Note**: Step counts assume ~2.1 step/s in 4-GPU SGLang mode. Actual speed with torch 2.9.1 + env var fix TBD — re-benchmark in Phase 2.2.
 
 ### 3.5 τ by Block Size (train vs inference)
 
@@ -448,8 +435,8 @@ Report with: `--report-to wandb --wandb-project torchspec-dflash-benchmark`
 | τ = 5.0-6.0 | On track — minor tuning needed | Increase num_anchors to 512, try longer sequences |
 | τ ≥ 6.0 | Paper-level — success | Ship it |
 
-**Current state (τ=1.86)** falls in the 1.5-3.0 range → priority is bug fixes, not more training.
+**Current state (τ=1.86)** falls in the 1.5-3.0 range. Bug 1 is now fixed; SpecForge deep diff confirms code parity. Next step: retrain from scratch with bug fixes applied and measure τ progression (Phase 3).
 
 ---
 
-*Plan v3 — 2026-03-21*
+*Plan v4 — 2026-03-22 (Phase 1 complete, Phase 2.1 resolved)*
