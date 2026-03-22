@@ -25,6 +25,8 @@ Data flow:
                 iter(fetcher)          queue.get()      store.get(key)     pad & batch
 """
 
+import queue
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
@@ -303,3 +305,48 @@ class MooncakeDataFetcher:
 
     def __iter__(self) -> Iterator[Dict[str, torch.Tensor]]:
         return iter(self._dataloader)
+
+
+class PrefetchedDataFetcher:
+    """Wraps MooncakeDataFetcher with async pre-fetching.
+
+    A background thread continuously fetches batches from the underlying
+    MooncakeDataFetcher (which blocks on Mooncake TCP), staging them in a
+    thread-safe queue.  The training loop reads from this queue, overlapping
+    data transfer with GPU compute.
+
+    Without prefetch: [data] → [compute] → [data] → [compute]  (sequential)
+    With prefetch:    [compute] → [compute] → [compute]         (overlapped)
+                      [data]      [data]      [data]
+    """
+
+    _SENTINEL = object()
+
+    def __init__(self, inner: MooncakeDataFetcher, prefetch_depth: int = 2):
+        self.inner = inner
+        self.prefetch_depth = prefetch_depth
+        self._queue: queue.Queue = queue.Queue(maxsize=prefetch_depth)
+        self._thread: Optional[threading.Thread] = None
+        self._error: Optional[BaseException] = None
+
+    def _prefetch_loop(self) -> None:
+        try:
+            for batch in self.inner:
+                self._queue.put(batch)
+        except Exception as e:
+            self._error = e
+        finally:
+            self._queue.put(self._SENTINEL)
+
+    def __iter__(self) -> Iterator[Dict[str, torch.Tensor]]:
+        self._error = None
+        self._thread = threading.Thread(target=self._prefetch_loop, daemon=True)
+        self._thread.start()
+
+        while True:
+            item = self._queue.get()
+            if item is self._SENTINEL:
+                if self._error is not None:
+                    raise self._error
+                return
+            yield item

@@ -40,7 +40,7 @@ from torch.distributed.device_mesh import init_device_mesh
 from torchspec.config.mooncake_config import MooncakeConfig
 from torchspec.data.utils import DataCollatorWithPadding
 from torchspec.training import checkpoint
-from torchspec.training.data_fetcher import MooncakeDataFetcher
+from torchspec.training.data_fetcher import MooncakeDataFetcher, PrefetchedDataFetcher
 from torchspec.training.fsdp import init_empty_weights
 from torchspec.training.optimizer import BF16Optimizer
 from torchspec.transfer.mooncake.eagle_store import EagleMooncakeStore
@@ -161,7 +161,7 @@ class Trainer(abc.ABC):
 
         collator = DataCollatorWithPadding()
 
-        self.data_fetcher = MooncakeDataFetcher(
+        inner_fetcher = MooncakeDataFetcher(
             queue=self.train_queue,
             mooncake_store=self.mooncake_store,
             collator=collator,
@@ -174,9 +174,18 @@ class Trainer(abc.ABC):
             skip_after_header=self.skip_after_header,
         )
 
-        logger.info(
-            f"[Rank {self.dp_rank}] Data fetcher initialized with batch_size={per_dp_rank_batch_size}"
-        )
+        prefetch_depth = getattr(self.args, "prefetch_depth", 0)
+        if prefetch_depth > 0:
+            self.data_fetcher = PrefetchedDataFetcher(inner_fetcher, prefetch_depth=prefetch_depth)
+            logger.info(
+                f"[Rank {self.dp_rank}] Prefetched data fetcher initialized "
+                f"(batch_size={per_dp_rank_batch_size}, prefetch_depth={prefetch_depth})"
+            )
+        else:
+            self.data_fetcher = inner_fetcher
+            logger.info(
+                f"[Rank {self.dp_rank}] Data fetcher initialized with batch_size={per_dp_rank_batch_size}"
+            )
 
     # ------------------------------------------------------------------
     # Eval queue & CPU cache
