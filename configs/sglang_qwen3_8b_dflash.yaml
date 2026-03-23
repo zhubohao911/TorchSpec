@@ -37,7 +37,7 @@ training:
   max_concurrent_batches: 1
   max_grad_norm: 1.0
   max_seq_length: 2048
-  num_epochs: 2
+  num_epochs: 3
   seed: 42
   training_num_gpus_per_node: 3   # 3 GPUs for training (was 2)
   training_num_nodes: 1
@@ -47,7 +47,7 @@ training:
   prefetch_depth: 8                 # CPU prefetch: overlap Mooncake TCP with GPU compute (increased from 2)
   save_interval: 1000              # Checkpoint every 1k steps
   save_per_epoch: false
-  max_checkpoints: 1               # Keep only latest checkpoint
+  max_checkpoints: 2               # Keep epoch 2 + epoch 3 for comparison
   warmup_ratio: 0.04
 
   # DFlash-specific parameters
