@@ -88,7 +88,7 @@ Loss converges rapidly: 13.0 → 0.48 in 200 steps.
 3. **`micro_batch_size`** has diminishing returns
 4. anchors=256 + batch=2 has same FlexAttention cost as anchors=512 + batch=1, but processes 2x data per optimizer step
 
-### Final Training Config
+### Phase C Training Config (Historical — Pre-Bugfix)
 
 ```yaml
 micro_batch_size: 4
@@ -530,11 +530,101 @@ Combined 3 training GPUs with FULL_SHARD and CPU prefetch. Eval disabled (`datas
 - Previous DFlash (step 18,001, pre-bugfix): τ = 1.86
 - Eagle3: τ = TBD (to be benchmarked for comparison)
 
+### Updated Plan (v6 — 2-Epoch Stop)
+
+After comparing with the [reference configs](specforge_dflash_training_reference.md), switched to a 2-epoch stop with decision matrix. Our hyperparameters match z-lab official (lr=6e-4, warmup=0.04), but dataset is 16x smaller (50K vs 800K).
+
+**Revised training config** (batch=1, accum=4 for better Mooncake TCP overlap):
+- `micro_batch_size: 1`, `draft_accumulation_steps: 4` → global_batch=12
+- `max_seq_length: 2048`, `num_anchors: 512`, `prefetch_depth: 8`
+- `num_epochs: 2`, `save_interval: 1000`, `max_checkpoints: 1`
+- Steps per epoch: ~3,934, total 2 epochs: ~7,868 steps
+
+### Critical Bug Fixes (2026-03-22)
+
+| Bug | Impact | Fix |
+|-----|--------|-----|
+| **FlexAttention recompile overflow** (Issue 30) | 5.7x slower (1.09s vs 0.19s/step) — 64+ unique padded shapes exhaust `recompile_limit`, falling back to eager mode | Bucketed padding to nearest 256 boundary (max 8 unique shapes). Commit `2e105c4`. |
+| **Mooncake buffer use-after-free** (Issue 31) | Batch>1 crash — collator holds freed Mooncake buffer, gets corrupted by new inference data | Clone tensors before cleanup. Commit `cdd18cf`. |
+| **Clone breaks pinned memory** (Issue 32) | 5x speed regression — `.clone()` creates unpinned tensors, `non_blocking=True` silently falls back to blocking transfer | Conditional clone for batch>1 only; batch=1 uses pinned views directly. Commit `2a6a3d9`. |
+
 ### Results
 
-| Checkpoint | Steps | Loss | τ | DFlash tok/s | Baseline tok/s | Speedup |
-|------------|-------|------|---|-------------|----------------|---------|
-| ckpt-5k | 5,000 | ~3.4 | 1.29 | 45.6 | 51.2 | 0.88x |
+| Checkpoint | Steps | Epoch | Loss | Accuracy | τ | DFlash tok/s | Baseline tok/s | Speedup |
+|------------|-------|-------|------|----------|---|-------------|----------------|---------|
+| ckpt-1k | 1,001 | 0.25 | ~5.0 | 0.13 | — | — | — | — |
+| **ckpt-2epoch** | **7,869** | **2.0** | **3.47** | **0.23** | **1.78** | **72.5** | **56.3** | **1.09x** |
+
+### 2-Epoch Training Run (2026-03-22)
+
+**Pod**: 4x H100 80GB (RunPod), custom Docker image `ghcr.io/zhubohao911/torchspec-dflash:latest`
+
+**Training summary**:
+- Duration: **1h 39min** (7,868 steps)
+- Speed: **~0.75 s/step** (~1.2 step/s)
+- Loss progression: 10+ → 5.0 (step 500) → 3.5 (step 2000) → 3.0 (step 5000) → 3.47 (final)
+- Accuracy: 0 → 0.13 (step 1000) → 0.23 (step 3000) → 0.30 (step 5000) → 0.23 (final)
+- Auto-resumed from `iter_1001` checkpoint (downloaded from HF)
+
+**Speed analysis**: 0.75 s/step is slower than Phase F Test 7 (0.19 s/step) due to:
+- Mooncake TCP transfer dominates data_time (~300ms per 80MB hidden states)
+- Batch=1 avoids the clone overhead but reduces GPU utilization
+- FlexAttention bucketed padding eliminates recompilation but adds padding overhead
+
+### 2-Epoch Benchmark (49 prompts, 512 tokens, greedy)
+
+| Metric | Value |
+|--------|-------|
+| **Mean τ** | **1.78** |
+| **Median τ** | **1** |
+| **DFlash throughput** | 72.5 tok/s |
+| **Baseline throughput** | 56.3 tok/s |
+| **Speedup** | 1.09x |
+
+**τ distribution** (14,140 draft cycles across 49 prompts):
+
+| τ | Count | % |
+|---|-------|---|
+| 1 | 7,559 | 53.5% |
+| 2 | 3,930 | 27.8% |
+| 3 | 1,652 | 11.7% |
+| 4 | 581 | 4.1% |
+| 5+ | 418 | 3.0% |
+
+**Per-topic performance** (best → worst):
+- Code/structured prompts: 93-221 tok/s (τ~2.5-3.4) — draft predicts well
+- History/science: 60-72 tok/s (τ~1.6-1.8) — average
+- Open-ended/creative: 22-50 tok/s (τ<1.5) — draft adds little value
+
+### Assessment
+
+τ=1.78 is **below the 3.0 target** but consistent with expectations:
+- z-lab achieved τ≥3.0 with **800K samples** (16x our dataset)
+- Our 50K dataset (47,484 samples) × 2 epochs = 94,968 sample passes
+- z-lab's 800K × 6 epochs = 4.8M sample passes — **50x more training**
+
+The model has learned basic next-token patterns but cannot reliably predict multi-token blocks (53% of cycles accept only 1 token).
+
+### Decision Matrix (per test plan v6)
+
+| τ at Epoch 2 | Action |
+|---|---|
+| τ < 2.0 ← **HERE (1.78)** | Scale dataset (200K-800K) or train more epochs |
+| 2.0 ≤ τ < 3.0 | Continue to epoch 4-6 on current data |
+| τ ≥ 3.0 | Success — deploy |
+
+### Recommended Next Steps
+
+1. **Scale dataset to 200K+ samples** — most impactful (16x data gap is the primary limitation)
+2. **Train 4-6 epochs on current 50K** — cheap experiment to test if more passes help
+3. **Investigate τ=1 dominance** — 53% of cycles accept only 1 token; may indicate block-position bias
+
+### Checkpoints
+
+| Checkpoint | Location |
+|------------|----------|
+| iter_1001 (step 1k) | [Xingh3/dflash-qwen3-8b-1k](https://huggingface.co/Xingh3/dflash-qwen3-8b-1k) |
+| iter_7869 (2 epochs) | [Xingh3/dflash-qwen3-8b-2epoch](https://huggingface.co/Xingh3/dflash-qwen3-8b-2epoch) |
 
 ---
 
@@ -568,3 +658,9 @@ Combined 3 training GPUs with FULL_SHARD and CPU prefetch. Eval disabled (`datas
 | `f75a285` | Add async data pre-fetch (PrefetchedDataFetcher) |
 | `3ceb630` | Fix PrefetchedDataFetcher persistent thread (single background thread) |
 | `bb922ba` | Fix prefetch GPU contention: stage data on CPU, move to GPU synchronously |
+| `cdd18cf` | Fix Mooncake buffer use-after-free with batch>1 (clone before cleanup) |
+| `2e105c4` | Fix FlexAttention recompile overflow: bucketed padding + higher recompile limit |
+| `3ab009b` | Switch to batch=1 accum=4 for better Mooncake TCP overlap |
+| `2a6a3d9` | Fix 5x speed regression: skip clone for batch=1 to preserve pinned memory |
+| `260f7af` | Update Dockerfile and setup script for faster pod provisioning |
+| `ece3e25` | Expand benchmark to 50 diverse prompts with τ distribution analysis |
