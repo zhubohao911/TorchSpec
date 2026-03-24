@@ -24,6 +24,7 @@ Setup (one-time):
     modal token set --token-id ak-l6eYjquYvG1smlyMfH0EKl --token-secret as-eJoVAHKgk0J9iRxNgMNPRJ --profile=doordash
     modal profile activate doordash
     modal secret create huggingface-secret HF_TOKEN=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
+    modal secret create xingh3-hf-write HF_WRITE_TOKEN=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  # personal write token for HF uploads
     modal secret create wandb-secret WANDB_API_KEY=<key>   # optional
 
 Usage:
@@ -291,10 +292,14 @@ def _run_training(
     output_dir = f"{OUTPUTS_DIR}/{run_id}"
     os.makedirs(output_dir, exist_ok=True)
 
+    step_args = []
+    if num_epochs is None:
+        step_args = [f"training.num_train_steps={max_steps}"]
+
     cmd = [
         sys.executable, "-m", "torchspec.train_entry",
         "--config", config,
-        f"training.num_train_steps={max_steps}",
+        *step_args,
         f"output_dir={output_dir}",
         *epoch_args,
         *gpu_overrides,
@@ -383,7 +388,8 @@ def _convert_and_upload_hf(
         print(f"  [HF Upload] Pushing to: {hf_repo}")
         try:
             from huggingface_hub import HfApi
-            api = HfApi()
+            write_token = os.environ.get("HF_WRITE_TOKEN") or os.environ.get("HF_TOKEN")
+            api = HfApi(token=write_token)
             api.create_repo(hf_repo, exist_ok=True, private=True)
             api.upload_folder(
                 folder_path=hf_output,
@@ -414,6 +420,7 @@ _common_kwargs = dict(
     retries=modal.Retries(initial_delay=0.0, max_retries=3),
     secrets=[
         modal.Secret.from_name("huggingface-secret"),
+        modal.Secret.from_name("xingh3-hf-write"),
     ],
 )
 
@@ -632,6 +639,82 @@ def _train_impl(
 
 
 # =============================================================================
+# Modal function — checkpoint conversion + HF upload (no GPU needed)
+# =============================================================================
+
+@app.function(
+    image=sglang_image,
+    volumes={HF_CACHE_DIR: hf_cache_vol, OUTPUTS_DIR: outputs_vol},
+    timeout=3600,
+    secrets=[
+        modal.Secret.from_name("huggingface-secret"),
+        modal.Secret.from_name("xingh3-hf-write"),
+    ],
+)
+def convert_checkpoint(
+    run_id: str,
+    hf_repo: str,
+    checkpoint_step: Optional[int] = None,
+):
+    """Convert an FSDP checkpoint to HF format and upload. No GPU required."""
+    import os
+
+    output_dir = f"{OUTPUTS_DIR}/{run_id}"
+    ckpt_base = f"{output_dir}/checkpoints"
+
+    if checkpoint_step is not None:
+        ckpt_dir = os.path.join(ckpt_base, f"iter_{checkpoint_step:07d}")
+        step_str = str(checkpoint_step)
+    else:
+        tracker = os.path.join(ckpt_base, "latest_checkpointed_iteration.txt")
+        if not os.path.isfile(tracker):
+            print(f"No checkpoint found at {ckpt_base}")
+            return
+        step_str = open(tracker).read().strip()
+        ckpt_dir = os.path.join(ckpt_base, f"iter_{int(step_str):07d}")
+
+    if not os.path.isdir(ckpt_dir):
+        print(f"Checkpoint dir {ckpt_dir} not found")
+        print(f"Available: {os.listdir(ckpt_base) if os.path.isdir(ckpt_base) else 'none'}")
+        return
+
+    hf_output = f"{output_dir}/hf_model_{step_str}"
+    print(f"Converting FSDP checkpoint: {ckpt_dir}")
+    print(f"Output: {hf_output}")
+
+    draft_config = f"{REPO_DIR}/torchspec/config/dflash_draft_config.json"
+    cmd = [
+        sys.executable, f"{REPO_DIR}/tools/convert_to_hf.py",
+        "--input-dir", ckpt_dir,
+        "--output-dir", hf_output,
+        "--config", draft_config,
+        "--target-model-path", "Qwen/Qwen3-8B",
+        "--trust-remote-code",
+        "-f",
+    ]
+    proc = subprocess.run(cmd, cwd=REPO_DIR, capture_output=False)
+    if proc.returncode != 0:
+        print(f"Conversion failed (exit code {proc.returncode})")
+        return
+
+    print(f"Conversion successful: {hf_output}")
+    print(f"Uploading to: {hf_repo}")
+
+    from huggingface_hub import HfApi
+    write_token = os.environ.get("HF_WRITE_TOKEN") or os.environ.get("HF_TOKEN")
+    api = HfApi(token=write_token)
+    api.create_repo(hf_repo, exist_ok=True, private=True)
+    api.upload_folder(
+        folder_path=hf_output,
+        repo_id=hf_repo,
+        commit_message=f"DFlash draft model (step {step_str})",
+    )
+    print(f"Upload complete: https://huggingface.co/{hf_repo}")
+
+    outputs_vol.commit()
+
+
+# =============================================================================
 # CLI entry point
 # =============================================================================
 
@@ -647,7 +730,24 @@ def main(
     dataset_size: int = 50000,
     extra_overrides: str = "",
     hf_repo: str = "",
+    convert_only: str = "",
+    convert_step: int = 0,
 ):
+    # --- Convert-only mode: no GPU, just convert + upload ---
+    if convert_only:
+        if not hf_repo:
+            print("Error: --hf-repo is required with --convert-only")
+            return
+        step = convert_step if convert_step > 0 else None
+        print(f"Converting checkpoint from run '{convert_only}' (step={step or 'latest'}) -> {hf_repo}")
+        convert_checkpoint.remote(
+            run_id=convert_only,
+            hf_repo=hf_repo,
+            checkpoint_step=step,
+        )
+        return
+
+    # --- Normal training mode ---
     if gpu_count < 4:
         print(f"Error: This script requires >= 4 GPUs (got {gpu_count}).")
         print("  For 1-2 GPU HF mode, use: modal run scripts/modal_dflash_train_hf.py")
