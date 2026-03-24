@@ -288,10 +288,14 @@ def _run_training(
     if num_epochs is not None:
         epoch_args = [f"training.num_epochs={num_epochs}"]
 
+    output_dir = f"{OUTPUTS_DIR}/{run_id}"
+    os.makedirs(output_dir, exist_ok=True)
+
     cmd = [
         sys.executable, "-m", "torchspec.train_entry",
         "--config", config,
         f"training.num_train_steps={max_steps}",
+        f"output_dir={output_dir}",
         *epoch_args,
         *gpu_overrides,
         *wandb_args,
@@ -531,9 +535,14 @@ def _train_impl(
     print("=" * 60)
     print(f"  GPU mode: {cfg.mode}")
     if run_eagle3:
-        print(f"  Eagle3 log: {OUTPUTS_DIR}/eagle3-qwen3-8b.log")
+        print(f"  Eagle3 log:         {OUTPUTS_DIR}/eagle3-qwen3-8b.log")
+        print(f"  Eagle3 checkpoints: {OUTPUTS_DIR}/eagle3-qwen3-8b/checkpoints/")
     if run_dflash:
-        print(f"  DFlash log: {OUTPUTS_DIR}/dflash-qwen3-8b.log")
+        print(f"  DFlash log:         {OUTPUTS_DIR}/dflash-qwen3-8b.log")
+        print(f"  DFlash checkpoints: {OUTPUTS_DIR}/dflash-qwen3-8b/checkpoints/")
+    print()
+    print(f"  All outputs saved to Modal volume 'torchspec-outputs'")
+    print(f"  Download: modal volume get torchspec-outputs /dflash-qwen3-8b/checkpoints/ ./checkpoints/")
     if os.environ.get("WANDB_API_KEY"):
         proj = wandb_project or "dflash-vs-eagle3"
         print(f"  WandB dashboard: https://wandb.ai/{proj}")
