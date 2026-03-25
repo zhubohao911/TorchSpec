@@ -49,7 +49,7 @@ TORCHSPEC_BRANCH = "feature/dflash-training"
 REPO_DIR = "/workspace/TorchSpec"
 HF_CACHE_DIR = "/root/.cache/huggingface"
 
-BENCHMARK_GPU = "H100:2"
+BENCHMARK_GPU = "H100:1"
 
 ZLAB_BENCHMARKS_FULL = {
     "gsm8k": 128,
@@ -503,7 +503,7 @@ def run_benchmark(
             "--model-path", model_path,
             "--host", "127.0.0.1",
             "--port", str(port),
-            "--tp-size", "2",
+            "--tp-size", "1",
             "--dtype", "bfloat16",
             "--trust-remote-code",
             "--mem-fraction-static", "0.85",
@@ -819,7 +819,7 @@ def main(
     print(f"  Concurrency:    {concurrency}")
     print(f"  Skip baseline:  {skip_baseline}")
     print(f"  Mode:           {mode_label}")
-    print(f"  Backend:        SGLang (tp=2, KV cache, CUDA graphs, paged attn)")
+    print(f"  Backend:        SGLang (tp=1, KV cache, CUDA graphs, paged attn)")
     print("=" * 70)
 
     all_results = []
