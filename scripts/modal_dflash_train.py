@@ -197,6 +197,9 @@ sglang_image = (
         f"cd {SGLANG_DIR} && git apply "
         f"{REPO_DIR}/patches/sglang/{SGLANG_PATCH_VERSION}/sglang.patch || true",
     )
+    # Overlay local torchspec/ code on top of the pinned commit —
+    # picks up local changes without full image rebuild.
+    .add_local_dir("torchspec", f"{REPO_DIR}/torchspec", copy=True)
 )
 
 # =============================================================================
@@ -272,6 +275,7 @@ def _run_training(
     wandb_project: Optional[str],
     wandb_team: Optional[str] = None,
     extra_args: list[str] = [],
+    resume: bool = False,
 ):
     import os
     import time
@@ -300,6 +304,22 @@ def _run_training(
     if num_epochs is None and max_steps > 0:
         step_args = [f"training.num_train_steps={max_steps}"]
 
+    resume_args = []
+    if resume:
+        ckpt_dir = f"{output_dir}/checkpoints"
+        tracker = os.path.join(ckpt_dir, "latest_checkpointed_iteration.txt")
+        if os.path.isfile(tracker):
+            latest_step = open(tracker).read().strip()
+            print(f"  [Resume] Found checkpoint tracker: step {latest_step}")
+            ckpt_path = os.path.join(ckpt_dir, f"iter_{int(latest_step):07d}")
+            if os.path.isdir(ckpt_path):
+                resume_args = [f"training.load_path={ckpt_dir}"]
+                print(f"  [Resume] Will resume from {ckpt_path}")
+            else:
+                print(f"  [Resume] WARNING: Checkpoint dir {ckpt_path} not found, starting fresh")
+        else:
+            print(f"  [Resume] No checkpoint tracker at {tracker}, starting fresh")
+
     cmd = [
         sys.executable, "-m", "torchspec.train_entry",
         "--config", config,
@@ -308,6 +328,7 @@ def _run_training(
         *epoch_args,
         *gpu_overrides,
         *wandb_args,
+        *resume_args,
         *extra_args,
     ]
 
@@ -442,11 +463,13 @@ def train_sglang(
     dataset_size: int = 50000,
     extra_overrides: Optional[str] = None,
     hf_repo: Optional[str] = None,
+    resume: bool = False,
 ):
     """Training entry point for 4+ GPU configs (SGLang inference backend)."""
     _train_impl(
         gpu_count, max_steps, num_epochs, run_eagle3, run_dflash,
         wandb_project, wandb_team, dataset_path, dataset_size, extra_overrides, hf_repo,
+        resume=resume,
     )
 
 
@@ -569,6 +592,7 @@ def _train_impl(
     dataset_size: int,
     extra_overrides: Optional[str] = None,
     hf_repo: Optional[str] = None,
+    resume: bool = False,
 ):
     import os
     import shutil
@@ -661,6 +685,7 @@ def _train_impl(
             wandb_project=wandb_project,
             wandb_team=wandb_team,
             extra_args=dataset_overrides + user_overrides,
+            resume=resume,
         )
 
     if run_dflash:
@@ -674,6 +699,7 @@ def _train_impl(
             wandb_project=wandb_project,
             wandb_team=wandb_team,
             extra_args=dataset_overrides + user_overrides,
+            resume=resume,
         )
 
     outputs_vol.commit()
@@ -809,6 +835,7 @@ def main(
     hf_repo: str = "",
     convert_only: str = "",
     convert_step: int = 0,
+    resume: bool = False,
 ):
     # --- Convert-only mode: no GPU, just convert + upload ---
     if convert_only:
@@ -847,6 +874,7 @@ def main(
     print(f"  GPU:          {SGLANG_GPU} ({infer_gpus} infer + {train_gpus} train)")
     print(f"  Eagle3:       {'YES' if run_eagle3 else 'SKIP'}")
     print(f"  DFlash:       {'YES' if run_dflash else 'SKIP'}")
+    print(f"  Resume:       {'YES (from latest checkpoint)' if resume else 'NO (fresh start)'}")
     if epoch_mode:
         print(f"  Num epochs:   {epochs_override} (steps auto-calculated from dataset)")
     else:
@@ -877,4 +905,5 @@ def main(
         dataset_size=dataset_size,
         extra_overrides=extra_overrides or None,
         hf_repo=hf_repo or None,
+        resume=resume,
     ).get()

@@ -52,9 +52,9 @@ training:
   fsdp_strategy: FULL_SHARD
   fsdp_reduce_dtype: bfloat16
   prefetch_depth: 8
-  save_interval: 5000               # was 1000 — less frequent for longer runs
-  save_per_epoch: true              # save at each epoch boundary for τ comparison
-  max_checkpoints: 3
+  save_interval: 1000
+  save_per_epoch: true
+  max_checkpoints: 2
   warmup_ratio: 0.04
 
   # DFlash-specific parameters
