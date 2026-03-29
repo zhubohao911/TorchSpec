@@ -27,7 +27,7 @@ import time
 
 # Fix PyTorch 2.9+ TorchInductor GEMM backend regression: without this,
 # FlexAttention backward pass hits NoValidChoicesError and training is 3x slower.
-# See Phase 2.1 in docs/inference/dflash/dflash_training_test_plan.md.
+# See Phase E in docs/inference/dflash/training_results.md.
 os.environ.setdefault("TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS", "ATEN,TRITON")
 from collections import namedtuple
 from contextlib import contextmanager

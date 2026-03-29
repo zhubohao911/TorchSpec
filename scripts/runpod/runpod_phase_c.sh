@@ -2,12 +2,12 @@
 set -euo pipefail
 
 # Phase C: Full DFlash training on 4x H100
-# Prerequisites: Run scripts/runpod_setup.sh first
+# Prerequisites: Run scripts/runpod/runpod_setup.sh first
 #
 # Usage:
 #   export HF_HOME=/workspace/.cache/huggingface
 #   export PYTORCH_ALLOC_CONF=expandable_segments:True
-#   nohup bash scripts/runpod_phase_c.sh > /tmp/phase_c.log 2>&1 &
+#   nohup bash scripts/runpod/runpod_phase_c.sh > /tmp/phase_c.log 2>&1 &
 
 cd /workspace/TorchSpec
 
@@ -21,7 +21,7 @@ echo "Commit: $(git log -1 --format='%h %s')"
 DATA_FILE="/workspace/data/perfectblend_50k.jsonl"
 if [ ! -f "$DATA_FILE" ]; then
     echo "ERROR: Dataset not found at $DATA_FILE"
-    echo "Run scripts/runpod_setup.sh first."
+    echo "Run scripts/runpod/runpod_setup.sh first."
     exit 1
 fi
 echo "Dataset: $DATA_FILE ($(wc -l < "$DATA_FILE") samples)"

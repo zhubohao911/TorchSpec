@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Setup Modal secrets for DFlash training.
 # Usage:
-#   bash scripts/setup_modal_secrets.sh                  # defaults to sandbox env
-#   bash scripts/setup_modal_secrets.sh --env main       # target a different env
+#   bash scripts/modal/setup_modal_secrets.sh                  # defaults to sandbox env
+#   bash scripts/modal/setup_modal_secrets.sh --env main       # target a different env
 #
 # Tokens can be provided via environment variables or interactively:
 #   HF_WRITE_TOKEN  — HuggingFace write token (https://huggingface.co/settings/tokens)

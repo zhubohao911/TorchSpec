@@ -2,7 +2,7 @@
 # RunPod DFlash test setup script.
 #
 # Usage (on RunPod H100 pod):
-#   bash scripts/runpod_dflash_test.sh
+#   bash scripts/runpod/runpod_dflash_test.sh
 #
 # Works with any RunPod image — auto-installs Python 3.12 if the
 # system Python is too old (TorchSpec requires >= 3.12).

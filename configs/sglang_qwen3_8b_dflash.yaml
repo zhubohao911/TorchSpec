@@ -15,7 +15,7 @@
 #   - ~760K effective samples × 3 epochs / 8 = ~285K optimizer steps
 #
 # Usage:
-#   modal run --detach scripts/modal_dflash_train.py \
+#   modal run --detach scripts/modal/modal_dflash_train.py \
 #     --num-epochs 3 --dataset-size 800000 \
 #     --hf-repo Xingh3/dflash-qwen3-8b-800k-3epoch \
 #     --extra-overrides "training.dflash_num_anchors=512 \

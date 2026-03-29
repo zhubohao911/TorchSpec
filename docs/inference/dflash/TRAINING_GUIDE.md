@@ -51,7 +51,6 @@ We provide pre-built Docker images with all dependencies (SGLang, PyTorch 2.9.1,
 **Use the pre-built image directly:**
 
 ```bash
-# Pull and run (e.g., on a cloud GPU instance or local machine)
 docker pull xingh3/torchspec-dflash:latest
 docker run --gpus all -it --shm-size=16g \
   -v /path/to/your/data:/workspace/data \
@@ -77,8 +76,6 @@ docker build --build-arg INCLUDE_MODEL=0 \
 ```
 
 The Dockerfile handles: SGLang 0.5.9 installation, SGLang patch application, system libraries (libibverbs, rdmacm, libnuma), TorchSpec installation, Mooncake permissions, and all environment variables.
-
-> **RunPod users**: Use the image tag directly as your Container Image when creating a pod. See the [RunPod Quick Start](#runpod-quick-start) section below.
 
 After launching with Docker, skip to [Prepare Training Data](#prepare-training-data).
 
@@ -126,13 +123,8 @@ pip install -e ".[dev]"
 These are **required** for correct training behavior:
 
 ```bash
-# Prevent HF cache misses in Ray workers
 export HF_HOME=/path/to/your/huggingface/cache
-
-# PyTorch 2.9+ memory allocator
 export PYTORCH_ALLOC_CONF=expandable_segments:True
-
-# Fix FlexAttention speed regression in PyTorch 2.9+
 export TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS=ATEN,TRITON
 ```
 
@@ -164,7 +156,7 @@ DFlash expects a JSONL file with conversation data:
 **Recommended dataset** — PerfectBlend 50K (good mix of instruction-following data):
 
 ```bash
-python scripts/prepare_perfectblend.py \
+python scripts/tools/prepare_perfectblend.py \
   --output /path/to/data/perfectblend_50k.jsonl \
   --max_samples 50000
 ```
@@ -192,7 +184,7 @@ Key hyperparameters in `configs/sglang_qwen3_8b_dflash.yaml`:
 |-----------|-------|-------------|
 | `micro_batch_size` | 1 | Per-GPU batch size |
 | `draft_accumulation_steps` | 4 | Gradient accumulation |
-| `global_batch_size` | 12 | 1 × 3 GPUs × 4 accum |
+| `global_batch_size` | 12 | 1 x 3 GPUs x 4 accum |
 | `max_seq_length` | 2048 | Max tokens per sequence |
 | `learning_rate` | 6e-4 | AdamW learning rate |
 | `warmup_ratio` | 0.04 | Warmup fraction |
@@ -236,22 +228,17 @@ The trainer reads `latest_checkpointed_iteration.txt` in the checkpoint director
 
 ### Console Output
 
-Look for these metrics during training:
-
 | Metric | Healthy | Problem |
 |--------|---------|---------|
 | step time | ~1.0 s/step | >2 s/step |
-| loss | Decreasing (10 → 3 over epoch 1) | Flat or increasing |
-| accuracy | Increasing (0 → 0.25 over epoch 1) | Stuck at 0 |
+| loss | Decreasing (10 -> 3 over epoch 1) | Flat or increasing |
+| accuracy | Increasing (0 -> 0.25 over epoch 1) | Stuck at 0 |
 | data_time | <0.7 s | >1 s consistently |
 
 ### Useful Log Filters
 
 ```bash
-# Step timing
 grep 'TIMING step=' training.log | tail -5
-
-# Progress bar updates
 grep 'Training:' training.log | tail -3
 ```
 
@@ -268,24 +255,20 @@ WandB logging is supported out of the box. Set `WANDB_API_KEY` and `WANDB_PROJEC
 Convert the FSDP distributed checkpoint to a single file:
 
 ```bash
-python scripts/extract_dflash_checkpoint.py \
+python scripts/tools/extract_dflash_checkpoint.py \
   --checkpoint_dir outputs/qwen3-8b-dflash/checkpoints/iter_NNNNNNN \
   --output /tmp/dflash_draft.pt
 ```
 
-### 2. Benchmark
+### 2. Benchmark with SGLang
 
-Measure acceptance length (τ) and speedup:
+Run the SGLang inference benchmark on Modal:
 
 ```bash
-python scripts/benchmark_dflash_inference.py \
-  --target_model Qwen/Qwen3-8B \
-  --draft_checkpoint /tmp/dflash_draft.pt \
-  --num_prompts 20 \
-  --max_new_tokens 256
+modal run --env sandbox scripts/modal/modal_dflash_benchmark_sglang.py
 ```
 
-**Targets**: τ ≥ 3.0, speedup ≥ 1.5x over autoregressive baseline.
+**Targets**: tau >= 3.0, speedup >= 1.5x over autoregressive baseline.
 
 ### 3. Upload Checkpoint (optional)
 
@@ -335,6 +318,143 @@ Defined in `torchspec/config/dflash_draft_config.json`:
 
 ---
 
+## Platform: Modal
+
+Training and benchmarking on Modal uses the scripts in `scripts/modal/`:
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/modal/modal_dflash_train.py` | Launch DFlash training on Modal (8x H100) |
+| `scripts/modal/modal_dflash_benchmark_sglang.py` | SGLang inference benchmark (tau, speedup) |
+| `scripts/modal/setup_modal_secrets.sh` | One-time Modal secrets configuration |
+
+```bash
+# Setup secrets (one-time)
+bash scripts/modal/setup_modal_secrets.sh
+
+# Launch training
+modal run --env sandbox scripts/modal/modal_dflash_train.py
+
+# Benchmark inference
+modal run --env sandbox scripts/modal/modal_dflash_benchmark_sglang.py
+```
+
+---
+
+## Platform: RunPod
+
+### Quick Start
+
+**Option A: Custom Docker Image (Recommended — <1 min setup)**
+
+Create a RunPod pod with:
+
+| Setting | Value |
+|---------|-------|
+| Container Image | `xingh3/torchspec-dflash:latest` (or `:slim`) |
+| GPUs | 4x H100 80GB |
+| Container Disk | **100 GB** |
+| Volume Disk | Optional (checkpoint persistence) |
+
+On the pod:
+
+```bash
+cd /workspace
+git clone https://github.com/zhubohao911/TorchSpec.git
+cd TorchSpec && git checkout feature/dflash-training
+
+bash scripts/runpod/runpod_setup.sh
+
+source .env.runpod
+tmux new -s train
+bash scripts/runpod/runpod_phase_c.sh 2>&1 | tee /tmp/phase_c.log
+# Detach: Ctrl+B, then D
+```
+
+**Option B: Manual Setup (RunPod stock image — ~20 min setup)**
+
+Use container image `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04` with the same pod settings. The `runpod_setup.sh` script handles full dependency installation.
+
+### What Survives Pod Restart
+
+| Survives (`/workspace/`) | Lost (container disk) |
+|---|---|
+| Git repo, checkpoints, training data | All pip packages (unless custom image) |
+| HF model cache | System packages (libibverbs, etc.) |
+
+> **After restart**: Run `bash scripts/runpod/runpod_setup.sh` — it auto-detects what's missing.
+
+### SSH Access
+
+RunPod requires a pseudo-terminal. Use `expect`:
+
+```bash
+expect -c '
+set timeout 60
+spawn ssh -o StrictHostKeyChecking=no -o RequestTTY=force \
+    -i ~/.ssh/id_ed25519 USER@ssh.runpod.io
+expect -re {[#\$] }
+interact
+'
+```
+
+Or use the **Jupyter terminal** in the RunPod web UI (no SSH needed).
+
+### Scripts Reference
+
+| Script | Purpose | When to run |
+|--------|---------|-------------|
+| `scripts/runpod/runpod_setup.sh` | Install deps, dataset, checkpoint | Once per new pod |
+| `scripts/runpod/runpod_phase_c.sh` | Launch/resume training | After setup |
+| `scripts/runpod/runpod_dflash_train.sh` | Alternative training launcher | Manual runs |
+| `scripts/runpod/runpod_dflash_test.sh` | Validation/test script | After training |
+| `scripts/runpod/runpod_ssh.sh` | SSH helper (expect wrapper) | For remote access |
+
+#### `runpod_setup.sh` — What it does
+
+1. Pre-flight checks (GPU count, disk space)
+2. Restore git-tracked files (if pod was restarted)
+3. Install system libs: libibverbs, rdmacm, libnuma
+4. Install SGLang 0.5.9 from source with `[all]` extras
+5. Apply SGLang speculative training patch
+6. Install TorchSpec
+7. Configure environment variables
+8. Setup HF cache symlink for Ray workers
+9. Download PerfectBlend 50K dataset
+10. Download checkpoint from HF (for resume)
+11. Fix Mooncake binary permissions
+12. Clear stale caches
+13. Verify all imports
+
+> Auto-detects custom Docker image and skips Steps 4-7 (`SKIP_INSTALL=1`).
+
+#### `runpod_phase_c.sh` — What it does
+
+1. Validates dataset exists
+2. Auto-detects checkpoint for resume (`training.load_path`)
+3. Sources `.env.runpod` for environment variables
+4. Launches training with YAML config
+
+### Monitoring on RunPod
+
+```bash
+tmux attach -t train                            # reattach to session
+tail -f /tmp/phase_c.log                        # live output
+grep 'TIMING step=' /tmp/phase_c.log | tail -5  # step timing
+grep 'Training:' /tmp/phase_c.log | tail -3     # progress bar
+```
+
+#### tmux Cheat Sheet
+
+| Action | Keys |
+|--------|------|
+| Detach (leave running) | `Ctrl+B`, then `D` |
+| New window | `Ctrl+B`, then `C` |
+| Switch windows | `Ctrl+B`, then `0`/`1`/`2` |
+| Reattach | `tmux attach -t train` |
+
+---
+
 ## Troubleshooting
 
 | Issue | Symptom | Fix |
@@ -344,27 +464,10 @@ Defined in `torchspec/config/dflash_draft_config.json`:
 | Slow training (3x expected) | step time >3 s | Set `TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS=ATEN,TRITON` |
 | OOM on A100 40GB | CUDA out of memory | Use H100/A100 80GB, or reduce `max_seq_length` / `dflash_num_anchors` |
 | Loss stuck at ~10 | No convergence after 500 steps | Check data format, ensure conversations have assistant turns |
-| `No module named 'sglang'` | Import error | Install SGLang (Step 2) |
+| `No module named 'sglang'` | Import error | Install SGLang (Step 2) or run `runpod_setup.sh` |
 | HF cache miss in Ray workers | Model re-downloads on each step | Set `HF_HOME` env var before launching |
-
----
-
-## RunPod Quick Start
-
-For RunPod users, automated setup scripts are provided:
-
-```bash
-# On a 4x H100 RunPod pod:
-cd /workspace
-git clone https://github.com/zhubohao911/TorchSpec.git
-cd TorchSpec && git checkout feature/dflash-training
-
-# Automated setup (installs everything, downloads data + model):
-bash scripts/runpod_setup.sh
-
-# Launch training:
-source .env.runpod
-bash scripts/runpod_phase_c.sh
-```
-
-See `docs/inference/dflash/dflash_runpod_guide.md` for full RunPod-specific details including Docker image options and SSH setup.
+| Git files deleted after restart | `No module named torchspec` | `git restore .` (RunPod setup script does this) |
+| Standard SSH fails (RunPod) | `Your SSH client doesn't support PTY` | Use `expect` wrapper or Jupyter terminal |
+| Ray actor timeout (RunPod) | `GetTimeoutError` during engine init | Setup script patches factory.py |
+| Container disk too small | `No space left on device` | Use 100GB container disk |
+| Training starts from step 0 | Loss ~10, accuracy 0 | Check checkpoint download in setup |

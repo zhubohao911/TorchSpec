@@ -2,10 +2,10 @@
 # Helper: run commands on RunPod via expect (works around PTY requirement).
 #
 # Usage:
-#   bash scripts/runpod_ssh.sh <ssh_target> <command> [timeout_seconds]
+#   bash scripts/runpod/runpod_ssh.sh <ssh_target> <command> [timeout_seconds]
 #
 # Example:
-#   bash scripts/runpod_ssh.sh user@ssh.runpod.io "nvidia-smi -L" 30
+#   bash scripts/runpod/runpod_ssh.sh user@ssh.runpod.io "nvidia-smi -L" 30
 #
 # RunPod's SSH gateway requires a PTY, which non-interactive shells lack.
 # This script uses expect + RequestTTY=force to work around it.

@@ -252,7 +252,7 @@ class DFlashTrainer(Trainer):
 
     # ------------------------------------------------------------------
     # Eval — disabled for DFlash (eval hangs in colocate/SGLang mode;
-    # benchmark τ separately after training via scripts/benchmark_dflash_inference.py)
+    # benchmark τ separately after training via scripts/modal/modal_dflash_benchmark_sglang.py)
     # ------------------------------------------------------------------
 
     def eval_from_cache(self) -> dict:

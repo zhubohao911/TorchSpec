@@ -5,8 +5,8 @@ Downloads mlabonne/open-perfectblend from HuggingFace, normalizes to
 TorchSpec conversation JSONL format, and optionally subsamples.
 
 Usage:
-    python scripts/prepare_perfectblend.py --output data/perfectblend_50k.jsonl --sample-size 50000
-    python scripts/prepare_perfectblend.py --output data/perfectblend_full.jsonl
+    python scripts/tools/prepare_perfectblend.py --output data/perfectblend_50k.jsonl --sample-size 50000
+    python scripts/tools/prepare_perfectblend.py --output data/perfectblend_full.jsonl
 """
 
 import argparse

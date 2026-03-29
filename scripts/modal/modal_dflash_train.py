@@ -23,14 +23,14 @@ For 1-2 GPU HF mode, use modal_dflash_train_hf.py instead.
 Setup (one-time):
     modal token set --token-id ak-l6eYjquYvG1smlyMfH0EKl --token-secret as-eJoVAHKgk0J9iRxNgMNPRJ --profile=doordash
     modal profile activate doordash
-    bash scripts/setup_modal_secrets.sh --env sandbox   # creates xingh3-hf-write + wandb-secret
+    bash scripts/modal/setup_modal_secrets.sh --env sandbox   # creates xingh3-hf-write + wandb-secret
 
 Usage:
-    modal run scripts/modal_dflash_train.py                                    # 8x H100, 200-step test
-    modal run scripts/modal_dflash_train.py --num-epochs 3 --dataset-size 800000  # epoch-based (auto-calculates steps)
-    modal run scripts/modal_dflash_train.py --max-steps 500                    # step-based (ignores epochs)
-    modal run scripts/modal_dflash_train.py --gpu-count 4                      # 4-GPU mode
-    modal run --detach scripts/modal_dflash_train.py                           # detached (survives terminal close)
+    modal run scripts/modal/modal_dflash_train.py                                    # 8x H100, 200-step test
+    modal run scripts/modal/modal_dflash_train.py --num-epochs 3 --dataset-size 800000  # epoch-based (auto-calculates steps)
+    modal run scripts/modal/modal_dflash_train.py --max-steps 500                    # step-based (ignores epochs)
+    modal run scripts/modal/modal_dflash_train.py --gpu-count 4                      # 4-GPU mode
+    modal run --detach scripts/modal/modal_dflash_train.py                           # detached (survives terminal close)
 
     To change GPU type, edit SGLANG_GPU constant at the top of this file.
 
@@ -55,7 +55,7 @@ Recommended parameters (8x H100, quality-optimized with anchors=512):
         training.draft_accumulation_steps=1 inference.inference_num_gpus=2 \
         training.training_num_gpus_per_node=6"
 
-    Key tuning insights (see dflash_modal_training_results.md):
+    Key tuning insights (see docs/inference/dflash/training_results.md):
       - 4+4 split (512-E) is fastest: 368s, fewer FSDP ranks = less allreduce
       - 2+ inference GPUs essential for anchors=512 (pool starves with 1)
       - anchors=512 matches anchors=256 speed with enough inference GPUs
@@ -64,7 +64,7 @@ Recommended parameters (8x H100, quality-optimized with anchors=512):
       - 1 inference GPU causes pool starvation (12-28/64) for all 512 configs
 
     Full training example (800K samples, 3 epochs, convergence-optimized):
-        modal run --detach scripts/modal_dflash_train.py \
+        modal run --detach scripts/modal/modal_dflash_train.py \
             --num-epochs 3 --dataset-size 800000 \
             --wandb-project dflash-800k \
             --hf-repo Xingh3/dflash-qwen3-8b-800k-3epoch \
@@ -653,7 +653,7 @@ def _train_impl(
             print(f"\n  Preparing PerfectBlend dataset ({dataset_size} samples)...")
             subprocess.run(
                 [
-                    sys.executable, f"{REPO_DIR}/scripts/prepare_perfectblend.py",
+                    sys.executable, f"{REPO_DIR}/scripts/tools/prepare_perfectblend.py",
                     "--output", data_file,
                     "--sample-size", str(dataset_size),
                     "--seed", "42",
@@ -854,7 +854,7 @@ def main(
     # --- Normal training mode ---
     if gpu_count < 4:
         print(f"Error: This script requires >= 4 GPUs (got {gpu_count}).")
-        print("  For 1-2 GPU HF mode, use: modal run scripts/modal_dflash_train_hf.py")
+        print("  Note: modal_dflash_train_hf.py has been removed; use at least 4 GPUs with this script.")
         return
 
     epochs_override = num_epochs if num_epochs > 0 else None

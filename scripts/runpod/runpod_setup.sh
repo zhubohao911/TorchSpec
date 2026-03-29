@@ -3,7 +3,7 @@
 # RunPod Fresh Pod Setup Script for DFlash Training
 # =============================================================================
 #
-# Consolidates all fixes from docs/inference/dflash/dflash_issues.md
+# Consolidates all fixes from docs/inference/dflash/issues.md
 # and commit history (feature/dflash-training branch):
 #
 #   Issue 1:  RunPod SSH PTY requirement (documented in usage below)
@@ -24,8 +24,8 @@
 #
 # Also references:
 #   - docker/sglang/v0.5.8.post1/Dockerfile.runpod (commit 7813f79)
-#   - scripts/runpod_dflash_train.sh (commit b28f06c) — older comprehensive script
-#   - docs/inference/dflash/dflash_runpod_guide.md — step-by-step guide
+#   - scripts/runpod/runpod_dflash_train.sh (commit b28f06c) — older comprehensive script
+#   - docs/inference/dflash/TRAINING_GUIDE.md — step-by-step guide
 #
 # Usage (from local machine):
 #   # 1. SSH into pod (Issue 1 — RunPod requires PTY):
@@ -43,10 +43,10 @@
 #   cd TorchSpec && git checkout feature/dflash-training
 #
 #   # 3. Run this script:
-#   bash scripts/runpod_setup.sh
+#   bash scripts/runpod/runpod_setup.sh
 #
 #   # Re-run after pod restart (skip pip installs, just restore + verify):
-#   SKIP_INSTALL=1 bash scripts/runpod_setup.sh
+#   SKIP_INSTALL=1 bash scripts/runpod/runpod_setup.sh
 #
 # Requirements (Issue 5):
 #   - RunPod pod with 4x H100 80GB
@@ -185,7 +185,7 @@ log "SGLang installed"
 # ─────────────────────────────────────────────────
 # Step 6: Apply SGLang patches for speculative training
 #
-# Order matters (from dflash_runpod_guide.md Step 3):
+# Order matters (from TRAINING_GUIDE.md Prerequisites):
 #   1. pip install SGLang (done above)
 #   2. Remove spec_training_info.py (conflicts with patch)
 #   3. git apply sglang.patch
@@ -211,7 +211,7 @@ else
     warn "sglang.patch already applied or conflicts — skipping"
 fi
 
-# Note: sglang_decode.patch is NOT applied per dflash_runpod_guide.md
+# Note: sglang_decode.patch is NOT applied per TRAINING_GUIDE.md
 # It contains additional decode-related changes that are optional.
 
 cd "$REPO_DIR"
@@ -295,7 +295,7 @@ if [ -f "$DATA_FILE" ]; then
     log "Dataset already exists: $DATA_FILE ($LINES lines)"
 else
     log "Downloading and preparing PerfectBlend (${DATASET_SIZE} samples)..."
-    python3 scripts/prepare_perfectblend.py \
+    python3 scripts/tools/prepare_perfectblend.py \
         --output "$DATA_FILE" \
         --sample-size "$DATASET_SIZE" \
         --seed "$DATASET_SEED" \
@@ -459,7 +459,7 @@ echo "============================================="
 echo ""
 echo "To start training:"
 echo "  source .env.runpod"
-echo "  nohup bash scripts/runpod_phase_c.sh > /tmp/phase_c.log 2>&1 &"
+echo "  nohup bash scripts/runpod/runpod_phase_c.sh > /tmp/phase_c.log 2>&1 &"
 echo "  tail -f /tmp/phase_c.log"
 echo ""
 echo "To monitor:"

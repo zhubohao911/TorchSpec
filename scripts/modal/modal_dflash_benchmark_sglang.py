@@ -19,19 +19,19 @@ Setup (one-time — same secrets as modal_dflash_train.py):
 
 Usage:
     # Default: quick run (30 samples each) on GSM8K + MATH-500
-    modal run --env sandbox scripts/modal_dflash_benchmark_sglang.py
+    modal run --env sandbox scripts/modal/modal_dflash_benchmark_sglang.py
 
     # Full z-lab sample counts (128 each)
-    modal run --env sandbox scripts/modal_dflash_benchmark_sglang.py --no-quick
+    modal run --env sandbox scripts/modal/modal_dflash_benchmark_sglang.py --no-quick
 
     # All z-lab benchmarks
-    modal run --env sandbox scripts/modal_dflash_benchmark_sglang.py --all-datasets
+    modal run --env sandbox scripts/modal/modal_dflash_benchmark_sglang.py --all-datasets
 
     # Skip baseline (only DFlash, fastest)
-    modal run --env sandbox scripts/modal_dflash_benchmark_sglang.py --skip-baseline
+    modal run --env sandbox scripts/modal/modal_dflash_benchmark_sglang.py --skip-baseline
 
     # Custom draft model (HuggingFace repo or Modal volume path)
-    modal run --env sandbox scripts/modal_dflash_benchmark_sglang.py \
+    modal run --env sandbox scripts/modal/modal_dflash_benchmark_sglang.py \
         --draft-repo Xingh3/dflash-qwen3-8b-1epoch
 """
 

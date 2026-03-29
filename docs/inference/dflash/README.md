@@ -33,9 +33,9 @@
 5. **`tests/test_dflash.py`** — 67 tests (unit + integration + quality)
 6. **`configs/sglang_qwen3_8b_dflash.yaml`** — 4-GPU SGLang training config
 7. **`configs/hf_qwen3_8b_1gpu.yaml`** / **`hf_qwen3_8b_dflash_1gpu.yaml`** — Single-GPU colocate configs
-8. **`scripts/runpod_dflash_train.sh`** — RunPod training script (auto-detects GPU count)
-9. **`scripts/benchmark_dflash_inference.py`** — Inference benchmark (baseline vs speculative)
-10. **`scripts/extract_dflash_checkpoint.py`** — FSDP checkpoint extraction
+8. **`scripts/runpod/runpod_dflash_train.sh`** — RunPod training script (auto-detects GPU count)
+9. **`scripts/modal/modal_dflash_benchmark_sglang.py`** — SGLang inference benchmark on Modal
+10. **`scripts/tools/extract_dflash_checkpoint.py`** — FSDP checkpoint extraction
 
 ## Files Modified
 

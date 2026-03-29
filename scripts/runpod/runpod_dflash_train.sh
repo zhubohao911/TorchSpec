@@ -7,12 +7,12 @@
 #   4 GPUs → SGLang backend (2 inference + 2 training)
 #
 # Usage (on RunPod pod):
-#   bash scripts/runpod_dflash_train.sh
+#   bash scripts/runpod/runpod_dflash_train.sh
 #
-#   SKIP_SETUP=1 bash scripts/runpod_dflash_train.sh
-#   RUN_EAGLE3=1 RUN_DFLASH=0 bash scripts/runpod_dflash_train.sh
-#   RUN_EAGLE3=0 RUN_DFLASH=1 bash scripts/runpod_dflash_train.sh
-#   MAX_STEPS=50 bash scripts/runpod_dflash_train.sh
+#   SKIP_SETUP=1 bash scripts/runpod/runpod_dflash_train.sh
+#   RUN_EAGLE3=1 RUN_DFLASH=0 bash scripts/runpod/runpod_dflash_train.sh
+#   RUN_EAGLE3=0 RUN_DFLASH=1 bash scripts/runpod/runpod_dflash_train.sh
+#   MAX_STEPS=50 bash scripts/runpod/runpod_dflash_train.sh
 set -euo pipefail
 
 WORKSPACE="${RUNPOD_VOLUME_PATH:-/workspace}"
@@ -377,5 +377,5 @@ echo "    train/avg_loss  — CE (DFlash) vs KL (Eagle3), compare trends not abs
 echo "    train/grad_norm — gradient health"
 echo ""
 echo "  To re-run DFlash only:"
-echo "    SKIP_SETUP=1 RUN_EAGLE3=0 RUN_DFLASH=1 bash scripts/runpod_dflash_train.sh"
+echo "    SKIP_SETUP=1 RUN_EAGLE3=0 RUN_DFLASH=1 bash scripts/runpod/runpod_dflash_train.sh"
 echo ""

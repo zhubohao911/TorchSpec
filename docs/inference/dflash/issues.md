@@ -25,7 +25,7 @@ interact
 
 FlexAttention (`torch.nn.attention.flex_attention`) requires PyTorch 2.6+. RunPod image has 2.4.1.
 
-**Solution**: See [RunPod Setup Guide](dflash_runpod_guide.md) Step 3.
+**Solution**: See [Training Guide — Prerequisites](TRAINING_GUIDE.md#system-libraries).
 
 ### Issue 3: Missing Native Libraries (Mooncake/RDMA)
 
@@ -187,7 +187,7 @@ export TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS=ATEN,TRITON
 
 This single env var fixes both:
 1. The 3x speed regression (restored to ~5 step/s in colocate 1-GPU mode)
-2. The `NoValidChoicesError` in FlexAttention backward pass ([Issue 10](dflash_issues.md#issue-10-flexattention-inductor-novalidchoiceserror))
+2. The `NoValidChoicesError` in FlexAttention backward pass ([Issue 10](issues.md#issue-10-flexattention-inductor-novalidchoiceserror))
 
 **Previous unsuccessful attempts** (before finding the fix):
 1. Remove `@torch.compile(dynamic=True)` from DFlashRMSNorm — no change
@@ -423,3 +423,27 @@ the persistent buffer instead of allocating. The same buffer is reused every ste
 | Gradient checkpointing | Implement actual `torch.utils.checkpoint` wrapping per decoder layer | Not started |
 | Anchor diversity at prompt boundaries | Allow anchors at prompt positions (Bug 2 above) — benchmark impact on τ | Not started |
 | `torch.compile` on draft model forward | Currently disabled (Issue 27). May be viable now that Q_LEN is stable (BUG 34 fix) | Worth re-testing |
+
+---
+
+## Future Work
+
+> Consolidated from pending work items (2026-03-22) and code audit recommendations (2026-03-29).
+
+### Code Improvements
+
+- [ ] **Draft KV cache**: Add KV cache support to `DFlashDraftModel.forward()` (currently recomputes full context each cycle — O(n^2) scaling). Likely the main factor limiting inference speedup at higher τ.
+- [ ] **Exclude block 0 from loss**: Simple code change in `torchspec/models/dflash.py` — block 0 has no preceding context, so including it adds noise to the gradient. Estimated τ impact: +0.05-0.15.
+- [ ] **Fix `intermediate_size` default mismatch**: `DFlashConfig` class default has `intermediate_size=14336`, while `dflash_draft_config.json` specifies `12288` (matching Qwen3-8B). Footgun if instantiated without the JSON file.
+
+### Training Recipe
+
+- [ ] **Extend to 6 epochs**: Resume Phase H checkpoint. Phase H accuracy was still improving at epoch 3 end. Estimated τ impact: +0.2-0.4.
+- [ ] **Increase seq_len to 3072**: z-lab trains with 3072. Longer sequences provide more complete reasoning chains for the draft model. Estimated τ impact: +0.1-0.3.
+- [ ] **Data regeneration**: Generate target-model-regenerated training data for higher τ.
+- [ ] **Try Nemotron + CodeAlpaca data blend**: Match z-lab's exact dataset composition for fairest comparison.
+
+### Upstream
+
+- [ ] **Port remaining SpecForge improvements**: Check for additional commits after `507da3e`.
+- [ ] **Eagle3 baseline**: Benchmark Eagle3 inference speed on same target model for comparison.
