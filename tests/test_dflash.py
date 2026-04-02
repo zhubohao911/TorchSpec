@@ -244,13 +244,23 @@ class TestAnchorSampling(unittest.TestCase):
         valid_count = keep_mask.sum(dim=1)
         self.assertLessEqual(valid_count[0].item(), 2)
 
-    def test_short_sequence_raises_error(self):
-        """Sequences with < 2*block_size tokens must raise ValueError (matches SpecForge)."""
+    def test_short_sequence_graceful_fallback(self):
+        """Sequences too short for anchor sampling return all-False keep_mask (zero loss)."""
         B = 1
         loss_mask = torch.ones(B, 4)
         model = _make_dflash_model(block_size=8, num_anchors=2)
-        with self.assertRaises(ValueError):
-            model._sample_anchor_positions(4, loss_mask, loss_mask.device)
+        anchors, keep_mask = model._sample_anchor_positions(4, loss_mask, loss_mask.device)
+        self.assertEqual(anchors.shape, (B, 2))
+        self.assertFalse(keep_mask.any(), "keep_mask should be all-False for too-short sequences")
+
+    def test_all_zero_loss_mask_graceful_fallback(self):
+        """All-zero loss_mask returns all-False keep_mask instead of crashing."""
+        B, seq_len = 2, 64
+        loss_mask = torch.zeros(B, seq_len)
+        model = _make_dflash_model(block_size=4, num_anchors=4)
+        anchors, keep_mask = model._sample_anchor_positions(seq_len, loss_mask, loss_mask.device)
+        self.assertEqual(anchors.shape, (B, 4))
+        self.assertFalse(keep_mask.any(), "keep_mask should be all-False for all-zero loss_mask")
 
 
 class TestPositionIds(unittest.TestCase):

@@ -179,6 +179,7 @@ class Trainer(abc.ABC):
             dynamic_loss_mask=self.dynamic_loss_mask,
             last_turn_loss_only=self.last_turn_loss_only,
             skip_after_header=self.skip_after_header,
+            min_loss_tokens=getattr(self.args, "min_loss_tokens", 0),
         )
 
         if prefetch_depth > 0:
@@ -224,6 +225,7 @@ class Trainer(abc.ABC):
             dynamic_loss_mask=self.dynamic_loss_mask,
             last_turn_loss_only=self.last_turn_loss_only,
             skip_after_header=self.skip_after_header,
+            min_loss_tokens=getattr(self.args, "min_loss_tokens", 0),
         )
         self._eval_collator = collator
         self._eval_cache: list[dict] = []

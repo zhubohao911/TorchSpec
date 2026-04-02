@@ -67,6 +67,7 @@ class MooncakeDataset(IterableDataset):
         last_turn_loss_only: bool = False,
         skip_after_header: int = 0,
         batch_size: int = 1,
+        min_loss_tokens: int = 0,
     ):
         self.ray_queue = ray_queue
         self.mooncake_store = mooncake_store
@@ -79,6 +80,7 @@ class MooncakeDataset(IterableDataset):
         self.last_turn_loss_only = last_turn_loss_only
         self.skip_after_header = skip_after_header
         self._batch_size = batch_size
+        self._min_loss_tokens = min_loss_tokens
 
     def _load_from_mooncake(self, sample: TrainSample) -> Dict[str, Any]:
         """Load tensors from mooncake key into device memory."""
@@ -171,11 +173,21 @@ class MooncakeDataset(IterableDataset):
             logger.debug(f"__iter__: got item, mooncake_key={item.mooncake_key}")
             data = self._load_from_mooncake(item)
 
-            if self._compute_loss_mask(data) is None:
+            mask = self._compute_loss_mask(data)
+            if mask is None:
                 skip_count += 1
                 logger.warning(
                     f"Skipping sample with all-zero loss mask "
                     f"(mooncake_key={item.mooncake_key}, total_skipped={skip_count})"
+                )
+                continue
+
+            if self._min_loss_tokens > 0 and isinstance(mask, torch.Tensor) and mask.sum() < self._min_loss_tokens:
+                skip_count += 1
+                logger.warning(
+                    f"Skipping sample with too few loss-masked tokens "
+                    f"({int(mask.sum())} < {self._min_loss_tokens}, "
+                    f"mooncake_key={item.mooncake_key}, total_skipped={skip_count})"
                 )
                 continue
 
@@ -220,6 +232,7 @@ def create_mooncake_dataloader(
     dynamic_loss_mask: bool = False,
     last_turn_loss_only: bool = False,
     skip_after_header: int = 0,
+    min_loss_tokens: int = 0,
 ) -> DataLoader:
     """Create a DataLoader that fetches from mooncake via queue.
 
@@ -259,6 +272,7 @@ def create_mooncake_dataloader(
         last_turn_loss_only=last_turn_loss_only,
         skip_after_header=skip_after_header,
         batch_size=batch_size,
+        min_loss_tokens=min_loss_tokens,
     )
 
     return DataLoader(
@@ -299,6 +313,7 @@ class MooncakeDataFetcher:
         dynamic_loss_mask: bool = False,
         last_turn_loss_only: bool = False,
         skip_after_header: int = 0,
+        min_loss_tokens: int = 0,
     ):
         self.batch_size = batch_size
         self._dataloader = create_mooncake_dataloader(
@@ -314,6 +329,7 @@ class MooncakeDataFetcher:
             dynamic_loss_mask=dynamic_loss_mask,
             last_turn_loss_only=last_turn_loss_only,
             skip_after_header=skip_after_header,
+            min_loss_tokens=min_loss_tokens,
         )
 
     def __iter__(self) -> Iterator[Dict[str, torch.Tensor]]:

@@ -126,16 +126,28 @@ class DFlashModel(nn.Module):
         max_anchor = max(seq_len - bs, 0)
         max_n = self.num_anchors
 
+        if max_anchor == 0:
+            logger.warning(
+                f"Sequence too short for anchor sampling (seq_len={seq_len}, "
+                f"block_size={bs}). Returning dummy anchors so loss is zero."
+            )
+            anchors = torch.zeros(bsz, max_n, dtype=torch.long, device=device)
+            keep_mask = torch.zeros(bsz, max_n, dtype=torch.bool, device=device)
+            return anchors, keep_mask
+
         valid = loss_mask[:, : max_anchor + 1] > 0.5
         valid_counts = valid.sum(dim=1)
 
-        actual_max = int(valid_counts.max().item()) - 1
-        if actual_max <= 0:
-            raise ValueError(
-                f"No valid anchor positions found (max_anchor={max_anchor}, "
-                f"block_size={self.block_size}). Preprocess data to ensure "
-                f"sequences have at least 2*block_size loss-masked tokens."
+        if int(valid_counts.max().item()) == 0:
+            logger.warning(
+                f"No valid anchor positions in batch (max_anchor={max_anchor}, "
+                f"block_size={bs}). Returning dummy anchors with "
+                f"keep_mask=False so loss is zero. Consider setting "
+                f"dataset.min_loss_tokens >= 2*block_size."
             )
+            anchors = torch.zeros(bsz, max_n, dtype=torch.long, device=device)
+            keep_mask = torch.zeros(bsz, max_n, dtype=torch.bool, device=device)
+            return anchors, keep_mask
 
         indices = (
             torch.arange(max_anchor + 1, device=device).unsqueeze(0).expand(bsz, -1)
