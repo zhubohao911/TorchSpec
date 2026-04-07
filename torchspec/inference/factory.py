@@ -188,6 +188,7 @@ def _prepare_sgl_engines(
     from torchspec.inference.engine.sgl_engine import SglEngine
 
     pg_obj, reordered_bundle_indices, reordered_gpu_ids = pg
+
     SglRayActor = ray.remote(SglEngine)
     env_vars = get_torchspec_env_vars()
 
@@ -330,6 +331,7 @@ def _prepare_vllm_engines(
     from torchspec.inference.engine.vllm_engine import VllmEngine
 
     pg_obj, reordered_bundle_indices, reordered_gpu_ids = pg
+
     VllmRayActor = ray.remote(VllmEngine)
     env_vars = get_torchspec_env_vars()
 
