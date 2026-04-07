@@ -34,6 +34,7 @@ Options:
     --output-dir    Output directory (default: {input_dir}_hf)
     --config        Path to draft model config.json (default: {input_dir}/config.json)
     --target-model-path  Target model (HF hub id or path) — auto-generates config.json if missing
+    --dtype         Output dtype (float16, bfloat16, float32). Use float16 for FP8 target models
     -f, --force     Overwrite output directory if exists
     --analyze-vocab Analyze token coverage at various draft vocab sizes (no conversion)
     --prune-vocab   Enable vocabulary pruning (requires --dataset-path and --draft-vocab-size)
@@ -111,6 +112,41 @@ class _EmptyStateDictLoadPlanner(dist_cp.default_planner.DefaultLoadPlanner):
                 v = torch.empty(v.size, dtype=v.properties.dtype)  # type: ignore[assignment]
             state_dict[k] = v
         super().set_up_planner(state_dict, metadata, is_coordinator)
+
+
+# ── Export fixups ────────────────────────────────────────────────────────────
+
+# vLLM checkpoints use `layers.0.xxx` for the single decoder layer,
+# while our training code uses `midlayer.xxx`.
+_WEIGHT_KEY_REMAP = [("midlayer.", "layers.0.")]
+
+
+def _remap_weight_keys(tensors: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    remapped = {}
+    for k, v in tensors.items():
+        new_key = k
+        for old_prefix, new_prefix in _WEIGHT_KEY_REMAP:
+            if k.startswith(old_prefix):
+                new_key = new_prefix + k[len(old_prefix) :]
+                break
+        remapped[new_key] = v
+    return remapped
+
+
+def _fixup_export_config(raw_config: dict, export_for_vllm: bool = False) -> dict:
+    """Apply model-type-specific fixups to the exported config."""
+    config = json.loads(json.dumps(raw_config))
+
+    if export_for_vllm and config.get("model_type") == "kimi_k2":
+        # vLLM uses 1-indexed layer IDs for kimi_k2
+        key = "eagle_aux_hidden_state_layer_ids"
+        if key in config:
+            config[key] = [x + 1 for x in config[key]]
+        eagle_cfg = config.get("eagle_config")
+        if eagle_cfg and key in eagle_cfg:
+            eagle_cfg[key] = [x + 1 for x in eagle_cfg[key]]
+
+    return config
 
 
 # ── Core conversion ─────────────────────────────────────────────────────────
@@ -201,17 +237,28 @@ def _extract_model_weights(
     return model_state
 
 
+def _prepare_export_tensors(hf_model, export_for_vllm: bool) -> dict[str, torch.Tensor]:
+    tensors = hf_model.state_dict()
+    if export_for_vllm:
+        logger.info("Exporting vLLM-compatible checkpoint keys")
+        return _remap_weight_keys(tensors)
+    logger.info("Exporting native checkpoint keys")
+    return dict(tensors)
+
+
 def _save_without_vocab_pruning(
-    hf_model, output_dir: str, config_path: str, vocab_size: int
+    hf_model, output_dir: str, raw_config: dict, vocab_size: int, export_for_vllm: bool = False
 ) -> None:
-    hf_model.save_pretrained(output_dir, safe_serialization=True)
-    config_json_path = os.path.join(output_dir, "config.json")
-    if os.path.isfile(config_json_path):
-        with open(config_json_path) as f:
-            saved_config = json.load(f)
-        saved_config["draft_vocab_size"] = vocab_size
-        with open(config_json_path, "w") as f:
-            json.dump(saved_config, f, indent=2)
+    tensors = _prepare_export_tensors(hf_model, export_for_vllm)
+    save_file(tensors, os.path.join(output_dir, "model.safetensors"))
+
+    export_config = _fixup_export_config(raw_config, export_for_vllm=export_for_vllm)
+    export_config["draft_vocab_size"] = vocab_size
+    actual_dtype = next(iter(tensors.values())).dtype
+    export_config["torch_dtype"] = str(actual_dtype).replace("torch.", "")
+    with open(os.path.join(output_dir, "config.json"), "w") as f:
+        json.dump(export_config, f, indent=2)
+
     logger.info(
         "Model saved to %s (no vocab pruning, draft_vocab_size=%d)",
         output_dir,
@@ -227,26 +274,47 @@ def _save_with_vocab_pruning(
     draft_vocab_size: int,
     d2t: torch.Tensor,
     t2d: torch.Tensor,
+    export_for_vllm: bool = False,
 ) -> None:
-    tensors = hf_model.state_dict()
+    tensors = _prepare_export_tensors(hf_model, export_for_vllm)
     tensors["t2d"] = t2d
     tensors["d2t"] = d2t
 
     lm_head_key = "lm_head.weight"
     if lm_head_key in tensors:
-        target_ids = torch.arange(draft_vocab_size) + d2t
-        logger.info(
-            "Trimming lm_head from %d to %d",
-            tensors[lm_head_key].shape[0],
-            draft_vocab_size,
-        )
-        tensors[lm_head_key] = tensors[lm_head_key][target_ids]
+        current_size = tensors[lm_head_key].shape[0]
+        if current_size == vocab_size and current_size != draft_vocab_size:
+            # lm_head is full vocab — prune to draft vocab using d2t mapping
+            logger.info(
+                "Trimming lm_head from %d to %d using d2t mapping",
+                current_size,
+                draft_vocab_size,
+            )
+            tensors[lm_head_key] = tensors[lm_head_key][d2t]
+        elif current_size == draft_vocab_size:
+            raise ValueError(
+                f"lm_head is already pruned to draft_vocab_size ({current_size}). "
+                f"This model was trained with vocabulary pruning, so the lm_head weight "
+                f"ordering is tied to the training data's token mapping. "
+                f"Post-training re-pruning with a different dataset is not supported. "
+                f"Retrain with draft_vocab_size == vocab_size (full vocab) for post-training pruning."
+            )
+        else:
+            logger.warning(
+                "lm_head size (%d) matches neither vocab_size (%d) nor draft_vocab_size (%d), skipping trim",
+                current_size,
+                vocab_size,
+                draft_vocab_size,
+            )
 
     save_file(tensors, os.path.join(output_dir, "model.safetensors"))
 
-    raw_config["draft_vocab_size"] = draft_vocab_size
+    export_config = _fixup_export_config(raw_config, export_for_vllm=export_for_vllm)
+    export_config["draft_vocab_size"] = draft_vocab_size
+    actual_dtype = next(iter(tensors.values())).dtype
+    export_config["torch_dtype"] = str(actual_dtype).replace("torch.", "")
     with open(os.path.join(output_dir, "config.json"), "w") as f:
-        json.dump(raw_config, f, indent=2)
+        json.dump(export_config, f, indent=2)
 
     logger.info(
         "Model saved to %s  (draft_vocab_size=%d, vocab_size=%d, d2t=%s, t2d=%s)",
@@ -368,6 +436,8 @@ def _convert_fsdp_to_hf(
     output_dir: str,
     target_model_path: Optional[str] = None,
     embedding_key: str = "model.embed_tokens",
+    export_for_vllm: bool = False,
+    output_dtype: Optional[torch.dtype] = None,
     prune_vocab: bool = False,
     dataset_path: Optional[str] = None,
     draft_vocab_size: Optional[int] = None,
@@ -392,9 +462,9 @@ def _convert_fsdp_to_hf(
     config = AutoDraftModelConfig.from_file(config_path)
     hf_model = AutoEagle3DraftModel.from_config(config)
 
-    # Infer dtype from checkpoint weights so the HF model matches (avoids silent precision changes)
     ckpt_dtype = Counter(v.dtype for v in model_state.values()).most_common(1)[0][0]
-    logger.info("Checkpoint dtype: %s, casting HF model to match", ckpt_dtype)
+    final_dtype = output_dtype or ckpt_dtype
+    logger.info("Checkpoint dtype: %s, output dtype: %s", ckpt_dtype, final_dtype)
     hf_model = hf_model.to(ckpt_dtype)
 
     missing, unexpected = hf_model.load_state_dict(model_state, strict=False)
@@ -421,14 +491,27 @@ def _convert_fsdp_to_hf(
             hf_model.embed_tokens.weight.dtype,
         )
 
+    if output_dtype and output_dtype != ckpt_dtype:
+        logger.info("Casting model from %s to %s", ckpt_dtype, output_dtype)
+        hf_model = hf_model.to(output_dtype)
+
     os.makedirs(output_dir, exist_ok=True)
 
     with open(config_path) as f:
         raw_config = json.load(f)
     vocab_size = raw_config["vocab_size"]
+    config_draft_vocab_size = raw_config.get("draft_vocab_size") or vocab_size
 
     if not prune_vocab:
-        _save_without_vocab_pruning(hf_model, output_dir, config_path, vocab_size)
+        if config_draft_vocab_size != vocab_size:
+            raise ValueError(
+                f"draft_vocab_size ({config_draft_vocab_size}) != vocab_size ({vocab_size}) "
+                f"in {config_path}. This model was trained with vocabulary pruning. "
+                f"Use --prune-vocab to generate t2d/d2t token mappings during conversion."
+            )
+        _save_without_vocab_pruning(
+            hf_model, output_dir, raw_config, vocab_size, export_for_vllm=export_for_vllm
+        )
         return
 
     # ── Vocab pruning ────────────────────────────────────────────────────
@@ -456,7 +539,14 @@ def _convert_fsdp_to_hf(
 
     d2t, t2d = process_token_dict_to_mappings(token_dict, draft_vocab_size, vocab_size)
     _save_with_vocab_pruning(
-        hf_model, output_dir, raw_config, vocab_size, draft_vocab_size, d2t, t2d
+        hf_model,
+        output_dir,
+        raw_config,
+        vocab_size,
+        draft_vocab_size,
+        d2t,
+        t2d,
+        export_for_vllm=export_for_vllm,
     )
 
 
@@ -499,6 +589,19 @@ def _parse_args() -> argparse.Namespace:
         "--trust-remote-code",
         action="store_true",
         help="Trust remote code when loading target model config/tokenizer",
+    )
+    parser.add_argument(
+        "--vllm",
+        action="store_true",
+        help="Export vLLM-compatible checkpoint keys. Defaults to native keys for sglang.",
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default=None,
+        choices=["float16", "bfloat16", "float32"],
+        help="Output dtype for model weights. If not set, uses the checkpoint's native dtype. "
+        "Use float16 when the target model runs FP8 inference (hidden states are float16)",
     )
     parser.add_argument(
         "-f",
@@ -629,6 +732,9 @@ if __name__ == "__main__":
     if os.path.exists(output_dir) and not args.force:
         raise ValueError(f"Output directory {output_dir} already exists. Use -f to overwrite.")
 
+    dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
+    output_dtype = dtype_map[args.dtype] if args.dtype else None
+
     model_dir = _detect_model_dir(input_dir)
     _convert_fsdp_to_hf(
         config_path=config_path,
@@ -636,6 +742,8 @@ if __name__ == "__main__":
         output_dir=output_dir,
         target_model_path=args.target_model_path,
         embedding_key=args.embedding_key,
+        export_for_vllm=args.vllm,
+        output_dtype=output_dtype,
         prune_vocab=args.prune_vocab,
         dataset_path=args.dataset_path,
         draft_vocab_size=args.draft_vocab_size,
