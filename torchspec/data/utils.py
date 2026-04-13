@@ -460,4 +460,6 @@ def load_hf_dataset(data_path: str):
             ds = ds.remove_columns(drop_cols)
         return ds
     except Exception:
-        return IterableDataset.from_generator(_load_hub_json_files, gen_kwargs={"data_path": data_path})
+        return IterableDataset.from_generator(
+            _load_hub_json_files, gen_kwargs={"data_path": data_path}
+        )
