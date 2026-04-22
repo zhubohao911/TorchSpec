@@ -85,8 +85,8 @@ class VllmConfig:
     pp_size: int = 1
     nnodes: int = 1
 
-    # Memory
-    mem_fraction_static: float = 0.8
+    # Memory (None = auto-compute from connector overhead; see VllmEngine)
+    mem_fraction_static: Optional[float] = None
 
     # Observability
     enable_metrics: bool = False
@@ -117,6 +117,7 @@ class InferenceConfig:
     inference_num_gpus_per_node: int = 8
     last_hidden_states_prenorm: Optional[bool] = None
     max_sample_pool_size: int = 0
+    store_last_hidden_states: bool = True
     sglang: SGLangConfig = field(default_factory=SGLangConfig)
     vllm: VllmConfig = field(default_factory=VllmConfig)
 

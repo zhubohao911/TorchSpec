@@ -145,7 +145,7 @@ def _prepare_hf_engines(args, pg, mooncake_config=None, engine_group: int = 0) -
 def _init_hf_engines(args, pg, mooncake_config=None, engine_group: int = 0) -> list:
     """Initialize HF engines with Ray placement groups."""
     engines, init_handles = _prepare_hf_engines(args, pg, mooncake_config, engine_group)
-    _wait_for_init(init_handles, "HF", timeout=300)
+    _wait_for_init(init_handles, "HF", timeout=1200)
     return engines
 
 
@@ -186,8 +186,9 @@ def _prepare_sgl_engines(
         f"({gpus_per_engine} GPU(s) each, nnodes={nnodes}, replicas={num_replicas})"
     )
 
-    pg_obj, reordered_bundle_indices, reordered_gpu_ids = pg
     from torchspec.inference.engine.sgl_engine import SglEngine
+
+    pg_obj, reordered_bundle_indices, reordered_gpu_ids = pg
 
     SglRayActor = ray.remote(SglEngine)
     env_vars = get_torchspec_env_vars()
@@ -236,7 +237,7 @@ def _prepare_sgl_engines(
                 head_engine = engines[replica_idx * nnodes]
                 ip, port = ray.get(
                     [head_engine.get_node_ip.remote(), head_engine.find_free_port.remote()],
-                    timeout=30,
+                    timeout=120,
                 )
                 addr = f"{ip}:{port}"
                 dist_init_addrs[replica_idx] = addr
@@ -250,7 +251,7 @@ def _prepare_sgl_engines(
     for i in range(num_engines):
         port = ray.get(
             engines[i].find_free_port.remote(start_port=next_start, consecutive=2),
-            timeout=30,
+            timeout=120,
         )
         pre_allocated_ports[i] = port
         next_start = port + 2
@@ -328,8 +329,9 @@ def _prepare_vllm_engines(
         f"({gpus_per_engine} GPU(s) each, nnodes={nnodes}, replicas={num_replicas})"
     )
 
-    pg_obj, reordered_bundle_indices, reordered_gpu_ids = pg
     from torchspec.inference.engine.vllm_engine import VllmEngine
+
+    pg_obj, reordered_bundle_indices, reordered_gpu_ids = pg
 
     VllmRayActor = ray.remote(VllmEngine)
     env_vars = get_torchspec_env_vars()
@@ -362,6 +364,19 @@ def _prepare_vllm_engines(
         )
         engines.append(engine)
 
+    # Pre-allocate ports to avoid TOCTOU races between parallel engines.
+    # Each engine needs 2 consecutive ports (dist_init + nccl).
+    pre_allocated_ports: dict[int, int] = {}
+    next_start = 10000
+    for i in range(num_engines):
+        port = ray.get(
+            engines[i].find_free_port.remote(start_port=next_start, consecutive=2),
+            timeout=30,
+        )
+        pre_allocated_ports[i] = port
+        next_start = port + 2
+        logger.info(f"vLLM Engine {i}: pre-allocated ports {port}, {port + 1}")
+
     dist_init_addrs: dict[int, str] = {}
     if nnodes > 1:
         configured_addr = getattr(args, "vllm_dist_init_addr", None)
@@ -372,14 +387,14 @@ def _prepare_vllm_engines(
                     f"Replica {replica_idx}: using configured dist_init_addr: {configured_addr}"
                 )
             else:
-                head_engine = engines[replica_idx * nnodes]
-                ip, port = ray.get(
-                    [head_engine.get_node_ip.remote(), head_engine.find_free_port.remote()],
-                    timeout=30,
-                )
-                addr = f"{ip}:{port}"
+                head_idx = replica_idx * nnodes
+                head_engine = engines[head_idx]
+                ip = ray.get(head_engine.get_node_ip.remote(), timeout=30)
+                addr = f"{ip}:{pre_allocated_ports[head_idx]}"
                 dist_init_addrs[replica_idx] = addr
-                logger.info(f"Replica {replica_idx}: auto-negotiated dist_init_addr: {addr}")
+                logger.info(
+                    f"Replica {replica_idx}: dist_init_addr from pre-allocated port: {addr}"
+                )
 
     init_handles = []
     for i, engine in enumerate(engines):
@@ -388,6 +403,7 @@ def _prepare_vllm_engines(
             engine.init.remote(
                 mooncake_config=mooncake_config,
                 dist_init_addr=dist_init_addrs.get(replica_idx),
+                pre_allocated_port=pre_allocated_ports.get(i),
             )
         )
 

@@ -20,9 +20,11 @@
 
 """Pipeline training loop: main training loop with sync training and async inference."""
 
+import re
 import shutil
 import tempfile
 import time
+from pathlib import Path
 
 import ray
 import wandb
@@ -34,7 +36,7 @@ from torchspec.controller.eval import (
     setup_eval,
     update_checkpoint_eval_meta,
 )
-from torchspec.utils.logging import logger
+from torchspec.utils.logging import get_tb_writer, logger
 
 
 def _maybe_sync_draft_weights(args, completed_steps, train_group, inference_engines):
@@ -73,6 +75,38 @@ def _maybe_sync_draft_weights(args, completed_steps, train_group, inference_engi
 
 def _is_save_interval_step(step: int, interval: int) -> bool:
     return interval > 0 and step % interval == 0
+
+
+def _cleanup_old_checkpoints(checkpoint_dir: str | None, max_checkpoints: int) -> None:
+    """Delete old checkpoints, keeping only the most recent `max_checkpoints`.
+
+    Checkpoint directories are named ``iter_NNNNNNN`` where N is the step number.
+    The ``latest_checkpointed_iteration.txt`` and ``best_*`` files are preserved.
+    """
+    if not checkpoint_dir or max_checkpoints <= 0:
+        return
+
+    base_dir = Path(checkpoint_dir).expanduser()
+    if not base_dir.exists():
+        return
+
+    # Find all iter_* directories, sorted by step number
+    iter_dirs = sorted(
+        (d for d in base_dir.iterdir() if d.is_dir() and re.match(r"iter_\d+", d.name)),
+        key=lambda d: int(re.search(r"\d+", d.name).group()),
+    )
+
+    if len(iter_dirs) <= max_checkpoints:
+        return
+
+    # Delete oldest checkpoints, keep the newest max_checkpoints
+    to_delete = iter_dirs[: len(iter_dirs) - max_checkpoints]
+    for old_dir in to_delete:
+        logger.info(f"Removing old checkpoint: {old_dir}")
+        try:
+            shutil.rmtree(old_dir)
+        except OSError as e:
+            logger.warning(f"Failed to remove old checkpoint {old_dir}: {e}")
 
 
 def _safe_training_cleanup(
@@ -297,8 +331,29 @@ def training_loop(
                     if step_time > 0:
                         metrics["perf/train_capacity"] = args.global_batch_size / step_time
 
+                    if completed_steps % 5 == 0 or completed_steps <= 5:
+                        data_t = metrics.get("perf/data_time", 0)
+                        compute_t = metrics.get("perf/compute_time", 0)
+                        fwd_t = metrics.get("perf/forward_time", 0)
+                        bwd_t = metrics.get("perf/backward_time", 0)
+                        opt_t = metrics.get("perf/optimizer_time", 0)
+                        logger.info(
+                            f"TIMING step={completed_steps}: "
+                            f"step={step_time:.3f}s "
+                            f"data={data_t:.3f}s "
+                            f"compute={compute_t:.3f}s "
+                            f"[fwd={fwd_t:.3f}s bwd={bwd_t:.3f}s opt={opt_t:.3f}s] "
+                            f"dispatch={dispatch_wait:.3f}s"
+                        )
+
                 if getattr(wandb, "run", None) is not None:
                     wandb.log(metrics)
+
+                tb_writer = get_tb_writer()
+                if tb_writer is not None:
+                    for key, value in metrics.items():
+                        if isinstance(value, (int, float)):
+                            tb_writer.add_scalar(key, value, completed_steps)
 
             # ── Eval at explicit interval (if configured) ─────────
             # Skip if a checkpoint save is about to run (it will eval anyway)
@@ -334,6 +389,9 @@ def training_loop(
                 best_eval_score = update_checkpoint_eval_meta(
                     args.checkpoint_dir, completed_steps, eval_metrics, best_eval_score
                 )
+                max_ckpts = getattr(args, "max_checkpoints", 0)
+                if max_ckpts > 0:
+                    _cleanup_old_checkpoints(args.checkpoint_dir, max_ckpts)
 
             _maybe_sync_draft_weights(args, completed_steps, train_group, inference_engines)
 
@@ -359,6 +417,9 @@ def training_loop(
                     best_eval_score = update_checkpoint_eval_meta(
                         args.checkpoint_dir, completed_steps, eval_metrics, best_eval_score
                     )
+                    max_ckpts = getattr(args, "max_checkpoints", 0)
+                    if max_ckpts > 0:
+                        _cleanup_old_checkpoints(args.checkpoint_dir, max_ckpts)
 
                 if completed_steps < num_steps:
                     current_epoch += 1
@@ -383,6 +444,9 @@ def training_loop(
         best_eval_score = update_checkpoint_eval_meta(
             args.checkpoint_dir, completed_steps, eval_metrics, best_eval_score
         )
+        max_ckpts = getattr(args, "max_checkpoints", 0)
+        if max_ckpts > 0:
+            _cleanup_old_checkpoints(args.checkpoint_dir, max_ckpts)
 
     final_status = ray.get(controller.get_full_status.remote())
     logger.info(

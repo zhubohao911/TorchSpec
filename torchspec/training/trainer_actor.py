@@ -25,6 +25,7 @@ from datetime import timedelta
 import torch.distributed as dist
 
 from torchspec import AutoDraftModelConfig
+from torchspec.models.draft.dflash import DFlashConfig
 from torchspec.ray.ray_actor import RayActor
 from torchspec.training.eagle3_trainer import Eagle3Trainer
 from torchspec.utils.distributed import init_gloo_group
@@ -64,11 +65,17 @@ class TrainerActor(RayActor):
         args.rank = dist.get_rank()
         args.world_size = dist.get_world_size()
 
-        self._trainer = Eagle3Trainer(args)
-
         draft_model_config = getattr(args, "draft_model_config_obj", None)
         if draft_model_config is None and getattr(args, "draft_model_config", None):
             draft_model_config = AutoDraftModelConfig.from_file(args.draft_model_config)
+
+        # Config-based trainer dispatch: DFlashConfig → DFlashTrainer, else Eagle3
+        if isinstance(draft_model_config, DFlashConfig):
+            from torchspec.training.dflash_trainer import DFlashTrainer
+
+            self._trainer = DFlashTrainer(args)
+        else:
+            self._trainer = Eagle3Trainer(args)
 
         target_model_path = getattr(args, "target_model_path", None)
 
@@ -99,7 +106,15 @@ class TrainerActor(RayActor):
         self._trainer.save_draft_model_for_serving(output_dir)
 
     def set_vocab_buffers(self, d2t, t2d) -> None:
-        self._trainer.draft_model.set_vocab_buffers(d2t, t2d)
+        if hasattr(self._trainer, "draft_model") and hasattr(
+            self._trainer.draft_model, "set_vocab_buffers"
+        ):
+            self._trainer.draft_model.set_vocab_buffers(d2t, t2d)
+        else:
+            raise AttributeError(
+                "set_vocab_buffers called but draft model does not support vocab pruning. "
+                "DFlash training should not use vocab pruning — check train_entry config."
+            )
 
     def set_eval_queue(self, queue, mooncake_config=None, per_dp_rank_batch_size: int = 1):
         return self._trainer.set_eval_queue(
