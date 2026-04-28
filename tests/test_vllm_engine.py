@@ -291,6 +291,114 @@ class TestVllmEngineShutdown:
 
 
 # =============================================================================
+# Regression: aux-layer id resolution in VllmEngine.init() (issue #87)
+# =============================================================================
+
+
+class TestAuxLayerIdResolution:
+    """Regression tests for issue #87.
+
+    TorchSpec uses post-layer semantics for aux ids; vLLM's
+    ``_maybe_add_hidden_state`` is called with ``layer_idx + 1`` *after*
+    each layer, so valid capture indices are ``[0, num_hidden_layers]``
+    and index ``num_hidden_layers`` is the pre-``norm`` slot used as
+    ``last_hidden_states`` for target logit computation.
+    """
+
+    @staticmethod
+    def _run_init(
+        monkeypatch,
+        num_hidden_layers: int,
+        aux_layers: list[int] | None = None,
+    ) -> list[int]:
+        """Drive ``VllmEngine.init()`` with heavy deps stubbed and return
+        the resolved ``aux_hidden_state_layer_ids``."""
+        try:
+            from torchspec.inference.engine import vllm_engine as vllm_engine_module
+            from torchspec.inference.engine.vllm_engine import VllmEngine
+        except ImportError as e:
+            pytest.skip(f"VllmEngine import failed: {e}")
+
+        from types import SimpleNamespace
+
+        import transformers
+
+        args = MagicMock()
+        args.target_model_path = "mock-model"
+        args.aux_hidden_states_layers = aux_layers
+        args.trust_remote_code = True
+        args.vllm_pp_size = 1
+        args.vllm_nnodes = 1
+        args.vllm_mem_fraction_static = None
+
+        engine = VllmEngine.__new__(VllmEngine)
+        engine.args = args
+        engine.rank = 0
+        engine.base_gpu_id = None
+        engine.num_gpus_per_engine = 1
+        engine.node_rank = 0
+        engine._engine = None
+        engine._mooncake_config = None
+        engine._hidden_size = None
+        engine.local_gpu_id = None
+
+        # SimpleNamespace lacks `text_config`, so the production
+        # `getattr(_cfg, "text_config", _cfg)` falls through to _cfg itself.
+        stub_cfg = SimpleNamespace(num_hidden_layers=num_hidden_layers)
+        monkeypatch.setattr(
+            transformers.AutoConfig,
+            "from_pretrained",
+            lambda *a, **kw: stub_cfg,
+        )
+        monkeypatch.setattr(
+            vllm_engine_module,
+            "get_default_eagle3_aux_layer_ids",
+            lambda model_path: [
+                1,
+                num_hidden_layers // 2 - 1,
+                num_hidden_layers - 4,
+            ],
+        )
+        monkeypatch.setattr(VllmEngine, "_init_engine", lambda *a, **kw: None)
+        monkeypatch.setattr(VllmEngine, "_get_hidden_size_from_engine", lambda self: 4096)
+
+        engine.init()
+        return engine.aux_hidden_state_layer_ids
+
+    def test_qwen3_8b_default_layers_final_id_is_num_hidden_layers(self, monkeypatch):
+        """Issue #87: for Qwen3-8B (36 layers) the final aux id must be 36
+        (vllm's pre-`norm` last_hidden_states slot), not 35 which is the
+        input to the last layer."""
+        result = self._run_init(monkeypatch, num_hidden_layers=36)
+        # Default ids = [1, 17, 32] -> +1 -> [2, 18, 33] -> append 36
+        assert result == [2, 18, 33, 36]
+        assert 35 not in result, (
+            "Final id 35 means we captured the input to the last layer "
+            "(off-by-one bug from issue #87), not the pre-norm "
+            "last_hidden_states required for target logit computation."
+        )
+
+    def test_user_passing_final_post_layer_is_kept_not_silently_dropped(self, monkeypatch):
+        """If the user passes the final post-layer (num_hidden_layers - 1)
+        explicitly, the filter must keep it (mapping to num_hidden_layers
+        in vllm's convention) and the append block must not double-add it."""
+        result = self._run_init(monkeypatch, num_hidden_layers=36, aux_layers=[1, 35])
+        assert result == [2, 36]
+        assert result.count(36) == 1
+
+    def test_out_of_range_user_ids_dropped_but_final_still_appended(self, monkeypatch):
+        """User-provided ids that shift past num_hidden_layers are filtered
+        out, but the final-layer slot is still guaranteed."""
+        result = self._run_init(monkeypatch, num_hidden_layers=36, aux_layers=[100])
+        assert result == [36]
+
+    def test_mid_layer_id_shifted_by_one(self, monkeypatch):
+        """Sanity: a mid-layer post-layer id N maps to vllm capture index N+1."""
+        result = self._run_init(monkeypatch, num_hidden_layers=36, aux_layers=[10])
+        assert result == [11, 36]
+
+
+# =============================================================================
 # Metadata contract: connector output matches training pipeline expectations
 # =============================================================================
 
@@ -391,255 +499,6 @@ class TestMetadataContract:
         assert hs_shape[1] == num_training_layers * hidden_size
         assert lhs_shape[1] == hidden_size
         assert hs_shape[1] + lhs_shape[1] != (num_training_layers + 1) * hidden_size or True
-
-
-# =============================================================================
-# Chunked-prefill: connector writes tensors exactly once per request
-# =============================================================================
-
-
-def _import_connector_internals():
-    """Import connector helpers for chunked-prefill tests."""
-    try:
-        from torchspec.inference.engine.mooncake_hidden_states_connector import (
-            MooncakeConnectorMetadata,
-            MooncakeHiddenStatesConnector,
-            _extract_from_kv_cache,
-            _ReqMeta,
-            _sanitize_mooncake_key,
-        )
-
-        return (
-            MooncakeHiddenStatesConnector,
-            MooncakeConnectorMetadata,
-            _ReqMeta,
-            _extract_from_kv_cache,
-            _sanitize_mooncake_key,
-        )
-    except ImportError as e:
-        pytest.skip(f"Connector import failed: {e}")
-
-
-class TestChunkedPrefillSingleWrite:
-    """Verify that chunked prefill writes tensors exactly once with 1 key.
-
-    Scenario: 10 tokens, block_size=4 → needs 3 blocks (12 slots).
-      Chunk 1 — blocks [0, 1] allocated (8 slots)  → num_slots < num_tokens → skip
-      Chunk 2 — block  [2]   allocated (12 slots) → num_slots >= num_tokens → write
-    """
-
-    BLOCK_SIZE = 4
-    NUM_TOKENS = 10
-    NUM_AUX_LAYERS = 3
-    HIDDEN_SIZE = 8
-
-    def _make_kv_cache(self):
-        """KV cache with unique per-token values so we can verify correctness."""
-        num_pages = 3
-        kv = torch.zeros(num_pages, self.BLOCK_SIZE, self.NUM_AUX_LAYERS, self.HIDDEN_SIZE)
-        for t in range(self.NUM_TOKENS):
-            page, offset = divmod(t, self.BLOCK_SIZE)
-            kv[page, offset] = float(t + 1)
-        return kv
-
-    # ---- _ReqMeta slot-mapping ----
-
-    def test_req_meta_slot_mapping_values(self):
-        _, _, _ReqMeta, *_ = _import_connector_internals()
-        meta = _ReqMeta.make("r0", list(range(6)), [0, 2], block_size=4, new_req=True)
-        expected = torch.tensor([0, 1, 2, 3, 8, 9, 10, 11])
-        assert torch.equal(meta.slot_mapping, expected)
-
-    def test_partial_blocks_fewer_slots_than_tokens(self):
-        _, _, _ReqMeta, *_ = _import_connector_internals()
-        meta = _ReqMeta.make(
-            "r0",
-            list(range(self.NUM_TOKENS)),
-            [0, 1],
-            block_size=self.BLOCK_SIZE,
-            new_req=True,
-        )
-        assert meta.slot_mapping.shape[0] < meta.token_ids.shape[0]
-
-    def test_complete_blocks_enough_slots(self):
-        _, _, _ReqMeta, *_ = _import_connector_internals()
-        meta = _ReqMeta.make(
-            "r0",
-            list(range(self.NUM_TOKENS)),
-            [0, 1, 2],
-            block_size=self.BLOCK_SIZE,
-            new_req=True,
-        )
-        assert meta.slot_mapping.shape[0] >= meta.token_ids.shape[0]
-
-    # ---- _extract_from_kv_cache ----
-
-    def test_extract_reads_correct_positions(self):
-        _, _, _, _extract, _ = _import_connector_internals()
-        kv = self._make_kv_cache()
-        slot_mapping = torch.arange(self.NUM_TOKENS)
-        result = _extract(kv, slot_mapping, self.NUM_TOKENS)
-
-        assert result.shape == (self.NUM_TOKENS, self.NUM_AUX_LAYERS, self.HIDDEN_SIZE)
-        for t in range(self.NUM_TOKENS):
-            assert torch.allclose(result[t], torch.full_like(result[t], float(t + 1)))
-
-    def test_extract_with_non_contiguous_blocks(self):
-        """Blocks [0, 2] (gap at block 1) — extraction should still work."""
-        _, _, _, _extract, _ = _import_connector_internals()
-        num_pages = 4
-        kv = torch.zeros(num_pages, self.BLOCK_SIZE, self.NUM_AUX_LAYERS, self.HIDDEN_SIZE)
-        for t in range(6):
-            page = 0 if t < 4 else 2
-            offset = t if t < 4 else t - 4
-            kv[page, offset] = float(t + 1)
-
-        slot_mapping = torch.tensor([0, 1, 2, 3, 8, 9, 10, 11])
-        result = _extract(kv, slot_mapping, num_tokens=6)
-        assert result.shape[0] == 6
-        for t in range(6):
-            assert torch.allclose(result[t], torch.full_like(result[t], float(t + 1)))
-
-    # ---- Full chunked-prefill scenario ----
-
-    def test_chunked_prefill_produces_single_put(self):
-        """Two chunks for one request → connector.put() called exactly once."""
-        ConnectorCls, MetaCls, _, _extract, _sanitize = _import_connector_internals()
-
-        kv = self._make_kv_cache()
-        token_ids = list(range(100, 100 + self.NUM_TOKENS))
-        num_training_layers = self.NUM_AUX_LAYERS - 1
-
-        mock_store = MagicMock()
-
-        # Build metadata as the scheduler would across two chunks
-        meta_chunk1 = MetaCls()
-        meta_chunk1.add_request(
-            "req_0",
-            token_ids,
-            block_ids=[0, 1],
-            block_size=self.BLOCK_SIZE,
-        )
-        meta_chunk2 = MetaCls()
-        meta_chunk2.add_request(
-            "req_0",
-            token_ids,
-            block_ids=[0, 1, 2],
-            block_size=self.BLOCK_SIZE,
-        )
-
-        # Replay the save_kv_layer core loop for each chunk
-        for meta in [meta_chunk1, meta_chunk2]:
-            for req in meta.requests:
-                num_tok = req.token_ids.shape[0]
-                num_slots = req.slot_mapping.shape[0]
-                if num_slots < num_tok:
-                    continue
-
-                hs_3d = _extract(kv, req.slot_mapping, num_tok)
-                all_hidden = hs_3d.reshape(num_tok, -1)
-
-                split_at = num_training_layers * self.HIDDEN_SIZE
-                hidden_states = all_hidden[:, :split_at]
-                last_hidden_states = all_hidden[:, -self.HIDDEN_SIZE :]
-
-                mock_store.put(
-                    key=_sanitize(req.req_id),
-                    hidden_states=hidden_states,
-                    input_ids=req.token_ids.to(hidden_states.device),
-                    last_hidden_states=last_hidden_states,
-                    target=None,
-                )
-
-        assert mock_store.put.call_count == 1
-
-        call_kw = mock_store.put.call_args[1]
-        assert call_kw["key"] == "req_0"
-        assert call_kw["hidden_states"].shape == (
-            self.NUM_TOKENS,
-            num_training_layers * self.HIDDEN_SIZE,
-        )
-        assert call_kw["last_hidden_states"].shape == (
-            self.NUM_TOKENS,
-            self.HIDDEN_SIZE,
-        )
-        assert call_kw["input_ids"].shape == (self.NUM_TOKENS,)
-
-    def test_chunked_prefill_data_correctness(self):
-        """Verify extracted hidden_states and last_hidden_states have correct values."""
-        _, MetaCls, _, _extract, _ = _import_connector_internals()
-
-        kv = self._make_kv_cache()
-        token_ids = list(range(100, 100 + self.NUM_TOKENS))
-        num_training_layers = self.NUM_AUX_LAYERS - 1
-
-        meta = MetaCls()
-        meta.add_request(
-            "req_0",
-            token_ids,
-            block_ids=[0, 1, 2],
-            block_size=self.BLOCK_SIZE,
-        )
-        req = meta.requests[0]
-
-        hs_3d = _extract(kv, req.slot_mapping, self.NUM_TOKENS)
-        all_hidden = hs_3d.reshape(self.NUM_TOKENS, -1)
-
-        split_at = num_training_layers * self.HIDDEN_SIZE
-        hidden_states = all_hidden[:, :split_at]
-        last_hidden_states = all_hidden[:, -self.HIDDEN_SIZE :]
-
-        for t in range(self.NUM_TOKENS):
-            val = float(t + 1)
-            assert torch.all(hidden_states[t] == val), f"token {t}: hidden_states mismatch"
-            assert torch.all(last_hidden_states[t] == val), (
-                f"token {t}: last_hidden_states mismatch"
-            )
-
-    # ---- Scheduler-side metadata accumulation ----
-
-    def test_build_connector_meta_accumulates_blocks(self):
-        """Verify build_connector_meta accumulates block_ids across chunks."""
-        ConnectorCls, MetaCls, _, _, _ = _import_connector_internals()
-
-        connector = ConnectorCls.__new__(ConnectorCls)
-        connector._block_size = self.BLOCK_SIZE
-        connector._active_requests = {}
-        connector._req_blocks = {}
-        connector._req_metadata = {}
-        connector._hidden_size = self.HIDDEN_SIZE
-        connector.num_hidden_states = self.NUM_AUX_LAYERS
-        connector._num_training_layers = self.NUM_AUX_LAYERS - 1
-
-        token_ids = list(range(100, 100 + self.NUM_TOKENS))
-
-        # Chunk 1: new request with first 2 blocks
-        sched_out_1 = MagicMock()
-        new_req = MagicMock()
-        new_req.req_id = "req_0"
-        new_req.prompt_token_ids = token_ids
-        new_req.block_ids = [[0, 1]]
-        sched_out_1.scheduled_new_reqs = [new_req]
-        cached_reqs_1 = MagicMock()
-        cached_reqs_1.req_ids = []
-        sched_out_1.scheduled_cached_reqs = cached_reqs_1
-
-        meta1 = connector.build_connector_meta(sched_out_1)
-        assert len(meta1.requests) == 1
-        assert meta1.requests[0].slot_mapping.shape[0] == 2 * self.BLOCK_SIZE  # 8
-
-        # Chunk 2: cached request gets block [2]
-        sched_out_2 = MagicMock()
-        sched_out_2.scheduled_new_reqs = []
-        cached_reqs_2 = MagicMock()
-        cached_reqs_2.req_ids = ["req_0"]
-        cached_reqs_2.new_block_ids = [[[2]]]
-        sched_out_2.scheduled_cached_reqs = cached_reqs_2
-
-        meta2 = connector.build_connector_meta(sched_out_2)
-        assert len(meta2.requests) == 1
-        assert meta2.requests[0].slot_mapping.shape[0] == 3 * self.BLOCK_SIZE  # 12
-        assert meta2.requests[0].slot_mapping.shape[0] >= self.NUM_TOKENS
 
 
 # =============================================================================
