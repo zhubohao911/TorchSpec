@@ -22,9 +22,14 @@ Three tests, increasing in cost and strength:
   over CUDA IPC, and assert per-parameter draft-model gradients match.
   Both arms are dp_size=1 and identical except the hidden-state
   transport, so this proves the transport is lossless and the result is
-  transport-invariant. Needs 1 GPU + MPS. (The design doc's literal
-  "vs the Mooncake disagg baseline" needs a live Mooncake run, which is
-  environment-fragile — see the test's own docstring.)
+  transport-invariant. Needs 1 GPU + MPS.
+* ``test_phase7_grad_parity_vs_disagg`` — the design doc's literal ask:
+  run the disaggregated (Mooncake) tiny config and the colocate tiny
+  config with the same seed and assert per-parameter draft-model
+  gradients match. Both arms are dp_size=1, so the only thing that
+  differs is the hidden-state transport — Mooncake (disagg) vs CUDA IPC
+  (colocate). Needs >=2 GPUs + MPS + an importable Mooncake; skips
+  cleanly otherwise.
 
 The gradient snapshot is the existing ``debug.save_debug_train_data``
 dump (``torchspec/utils/train_dump.py``); the deterministic-seed
@@ -56,6 +61,29 @@ GRAD_RTOL = float(os.environ.get("GRAD_PARITY_RTOL", "2e-3"))
 
 
 # ---------------------------------------------------------------------------
+# Probes
+# ---------------------------------------------------------------------------
+
+def _disagg_runnable() -> bool:
+    """True iff the Mooncake store can actually be imported.
+
+    The disagg baseline arm needs ``mooncake.store``, whose native .so
+    links the RDMA verbs stack (libibverbs / libnuma / librdmacm /
+    libnl-3). On hosts without those the import raises at load time;
+    probe in a subprocess so a hard failure doesn't poison this process.
+    """
+    probe = "import mooncake.store  # noqa\nprint('ok')\n"
+    try:
+        proc = subprocess.run(
+            ["python3", "-c", probe],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0 and "ok" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
 # Arm runner
 # ---------------------------------------------------------------------------
 
@@ -68,14 +96,26 @@ def _run_arm(
     extra_args: list[str] | None = None,
     timeout_s: int = 1800,
     ipc: bool = False,
+    disable_mps: bool = False,
+    skip_on_failure: bool = False,
 ) -> str:
     """Run train_entry for 1 step, dumping per-parameter gradients.
 
     Returns the captured combined stdout+stderr log.
 
     ``ipc=True`` selects the CUDA IPC hidden-state transport
-    (``TORCHSPEC_COLOCATE_IPC=1``); ``ipc=False`` (default) uses the
-    gloo CPU-staged transport.
+    (``TORCHSPEC_COLOCATE_IPC=1``); ``ipc=False`` (default) forces the
+    gloo CPU-staged transport (``=0``).
+
+    ``disable_mps`` is for the disaggregated arm: it is a non-colocate
+    run and must not be caught by an MPS daemon left running by the
+    colocate arm / earlier tests (its actors otherwise fail MPS's
+    ``CUDA_VISIBLE_DEVICES`` validation and the worker dies).
+
+    ``skip_on_failure`` turns a non-zero exit into ``pytest.skip``
+    instead of a hard assert — used for the environment-fragile Mooncake
+    baseline arm so a broken third-party baseline does not fail the
+    colocate suite.
     """
     config_path = REPO_ROOT / "configs" / config_name
     dataset = REPO_ROOT / "examples" / "data" / "sample_conversations.jsonl"
@@ -99,6 +139,10 @@ def _run_arm(
         env["TORCHSPEC_COLOCATE_IPC"] = "0"
         env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         env.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+    if disable_mps:
+        env.pop("CUDA_MPS_PIPE_DIRECTORY", None)
+        env.pop("CUDA_MPS_LOG_DIRECTORY", None)
+        env["TORCHSPEC_DISABLE_MPS"] = "1"
 
     cmd = [
         "python", "-m", "torchspec.train_entry",
@@ -123,6 +167,15 @@ def _run_arm(
     for line in log.splitlines()[-80:]:
         print(line)
     print(f"=== /_run_arm({config_name}) tail ===\n")
+    if proc.returncode != 0 and skip_on_failure:
+        # The disagg baseline arm runs the Mooncake transfer engine —
+        # third-party and environment-fragile. A baseline that cannot run
+        # is not a colocate defect, so skip rather than fail the suite.
+        pytest.skip(
+            f"grad-parity baseline arm '{config_name}' could not run on "
+            f"this host (train_entry exit {proc.returncode}); see the "
+            f"captured tail above."
+        )
     assert proc.returncode == 0, (
         f"train_entry({config_name}, ipc={ipc}) exited {proc.returncode}; "
         f"see log above."
@@ -341,3 +394,82 @@ def test_phase7_grad_parity_full():
     )
     print(f"[grad-parity] full OK: {n} gradients match across "
           f"gloo + CUDA IPC transports")
+
+
+@pytest.mark.timeout(90 * 60)
+@pytest.mark.skipif(
+    not has_n_gpus(2),
+    reason="grad-parity vs-disagg needs >=2 GPUs (1 trainer + 1 disagg engine).",
+)
+@pytest.mark.skipif(
+    not mps_works(),
+    reason="grad-parity vs-disagg needs working NVIDIA MPS for the colocate arm.",
+)
+@pytest.mark.skipif(
+    not _disagg_runnable(),
+    reason=(
+        "grad-parity vs-disagg needs an importable Mooncake store for the "
+        "disagg baseline arm (apt-get install libibverbs1 libnuma1 "
+        "librdmacm1 libnl-3-200)."
+    ),
+)
+def test_phase7_grad_parity_vs_disagg():
+    """Per-parameter gradient parity: colocate vs the disagg baseline.
+
+    The design doc's literal validation ask. Run the disaggregated
+    (Mooncake) tiny config and the colocate tiny config with the same
+    seed, deterministic prompt order, and identical draft-training
+    config. Both arms are dp_size=1 (single trainer rank — FSDP is a
+    no-op, no all-reduce reduction-order term), so the only thing that
+    differs is the hidden-state transport: **Mooncake** (disagg) vs
+    **CUDA IPC** (colocate, the shipped default). Both are lossless
+    copies, so the draft-model gradients must match within
+    ``GRAD_ATOL``/``GRAD_RTOL``.
+
+    A mismatch means the colocate transport is *not* delivering the same
+    hidden states the disagg path would — the exact failure the design
+    doc's validation plan calls for.
+
+    The Mooncake-disagg crash that historically blocked this (a go1.25
+    `runtime.sigfwd` SIGSEGV) is fixed by the `mooncake-transfer-engine
+    ==0.3.10.post1` pin (see implementation-log round 6). If the disagg
+    arm still cannot run on a given host, the test **skips** rather than
+    fails — a broken third-party baseline is not a colocate regression,
+    and the colocate path is independently covered by
+    ``test_phase7_grad_parity_determinism`` and
+    ``test_phase7_grad_parity_full``.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="gradvsdisagg-"))
+
+    # The disagg arm is a non-colocate run. If an MPS daemon is up on
+    # this node (run_smoke_host.sh's pre-flight and the earlier colocate
+    # grad-parity tests both start one), every CUDA process on the node
+    # routes through MPS and the disagg actors die (invalid
+    # CUDA_VISIBLE_DEVICES). A graceful stop can hang on a still-attached
+    # client, so force the teardown; the colocate arm restarts MPS.
+    from torchspec.colocate.mps import force_stop_mps
+
+    force_stop_mps()
+
+    # Disagg baseline arm — 2 GPUs (trainer + engine disjoint), MPS off.
+    # skip_on_failure: the Mooncake transfer engine is environment-fragile.
+    _run_arm("disagg_qwen0p6b_tiny.yaml", dump_dir=tmp / "disagg",
+             visible_devices="0,1", seed=42, ipc=False, disable_mps=True,
+             skip_on_failure=True)
+    # Colocate arm — 1 GPU (trainer + engine MPS-shared), CUDA IPC (the
+    # shipped default transport).
+    _run_arm("colocate_qwen0p6b_tiny.yaml", dump_dir=tmp / "colocate",
+             visible_devices="0", seed=42, ipc=True)
+
+    n, mismatches = _compare_grad_dumps(
+        tmp / "disagg", tmp / "colocate", atol=GRAD_ATOL, rtol=GRAD_RTOL
+    )
+    assert n > 0, "no gradients were compared"
+    assert not mismatches, (
+        f"grad parity FAILED — {len(mismatches)} of {n} draft-model "
+        f"gradients diverge between disagg and colocate "
+        f"(atol={GRAD_ATOL}, rtol={GRAD_RTOL}):\n  "
+        + "\n  ".join(mismatches[:20])
+    )
+    print(f"[grad-parity] vs-disagg OK: {n} gradients match the disagg "
+          f"baseline")
