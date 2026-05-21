@@ -208,7 +208,7 @@ sglang_image = (
         # 1. Remove conflicting spec_training_info.py AFTER install, BEFORE patch
         # 2. Apply sglang.patch
         f"rm -f {SGLANG_DIR}/python/sglang/srt/speculative/spec_training_info.py",
-        f"cd {SGLANG_DIR} && git apply "
+        f"cd {SGLANG_DIR} && git apply --recount "
         f"{REPO_DIR}/patches/sglang/{SGLANG_PATCH_VERSION}/sglang.patch",
     )
     # Overlay local code on top of the pinned commit —
