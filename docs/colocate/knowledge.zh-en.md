@@ -17,6 +17,31 @@
 This document does **not** describe the implementation. See
 [`implementation.md`](implementation.md) for the phased plan.
 
+> ⚠️ **Cross-check — updated 2026-05-21.** This doc explains the *original*
+> design, in which hidden states cross via **NCCL P2P, on-device,
+> GPU-local `send`/`recv`**. That part did not survive contact with
+> reality: NCCL hard-rejects a communicator with two ranks on one
+> physical GPU (`ncclInvalidUsage`, "Duplicate GPU detected"), so
+> same-GPU NCCL P2P is **impossible**. The shipped hidden-state transport
+> is **CUDA IPC zero-copy (default)** with **gloo CPU-staging** as the
+> opt-out fallback — both over a gloo `meta_group`. The union NCCL world,
+> MPS, fractional bundles, and memory-cap concepts below are all still
+> accurate. See [`implementation_log.md`](implementation_log.md) rounds 1
+> / 7 / 9 and [`transport_benchmark.md`](transport_benchmark.md). The
+> original NCCL-P2P text is kept for the design rationale and flagged
+> inline.
+>
+> 🇨🇳 **交叉核对 —— 2026-05-21 更新。** 本文讲的是*最初*的设计：hidden
+> states 通过 **NCCL P2P、设备内、GPU 本地的 `send`/`recv`** 传递。这部分
+> 后来被证明行不通：NCCL 会硬拒绝"同一张物理 GPU 上有两个 rank"的
+> communicator（报 `ncclInvalidUsage`、"Duplicate GPU detected"），所以
+> 同卡 NCCL P2P **不可能实现**。实际落地的 hidden-state 传输是
+> **CUDA IPC 零拷贝（默认）** + **gloo CPU 中转（可选回退）**，都走 gloo
+> `meta_group`。下文关于 union NCCL world、MPS、分数 bundle、显存上限的
+> 概念依然正确。详见 [`implementation_log.md`](implementation_log.md) 的
+> round 1 / 7 / 9 与 [`transport_benchmark.md`](transport_benchmark.md)。
+> 原 NCCL-P2P 文字保留以说明设计思路，并在文中就地标注。
+
 🇨🇳 本文**不**讨论具体实现。分阶段实施方案见 [`implementation.md`](implementation.md)。
 
 ---
@@ -405,6 +430,18 @@ between them an on-device copy.
 
 ## 5. NCCL P2P (`send` / `recv`)
 ## 5. NCCL 点对点（`send` / `recv`）
+
+> ⚠️ **Superseded for the hidden-state plane (see top banner).** This
+> section's premise — that the engine→trainer handoff is same-GPU NCCL
+> `send`/`recv` "degenerating to an intra-device copy" — is wrong. NCCL
+> refuses two ranks on one physical GPU. The shipped transport is CUDA
+> IPC (default) / gloo CPU-staging (fallback). NCCL is still used for the
+> **union-world bootstrap** and the trainer-only **FSDP collectives**
+> described elsewhere — only the hidden-state P2P here is superseded.
+> 🇨🇳 **本节关于 hidden-state 传输的前提已作废（见顶部说明）**：引擎→训练
+> 的传递不是同卡 NCCL `send`/`recv`"退化为设备内拷贝" —— NCCL 不允许同卡
+> 两 rank。实际传输是 CUDA IPC（默认）/ gloo 中转（回退）。NCCL 仍用于
+> union-world 启动和 FSDP 集合通信，仅本节的 hidden-state P2P 作废。
 
 NCCL is the GPU collective library. Most of TorchSpec's NCCL usage today is
 **collectives**: all-reduce (FSDP grad sync), all-gather, reduce-scatter, etc.

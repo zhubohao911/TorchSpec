@@ -7,9 +7,26 @@
 > you already understand MPS, fractional Ray bundles, NCCL union worlds, and
 > how the disaggregated baseline works today.
 
+> ⚠️ **This is the original plan — superseded in places. Read with
+> [`implementation_log.md`](implementation_log.md).** Cross-check, updated
+> 2026-05-21:
+> - **Phase 3's "NCCL P2P data plane" is not what shipped.** NCCL hard-rejects
+>   a communicator with two ranks on one physical GPU ("Duplicate GPU
+>   detected"), so same-GPU NCCL P2P is impossible. The shipped hidden-state
+>   transport is **CUDA IPC zero-copy (default)** with **gloo CPU-staging**
+>   as the fallback, both over a gloo `meta_group`. See implementation_log
+>   rounds 1 (the NCCL correction), 7 (CUDA IPC made default), 9 (the IPC
+>   probe fix), and [`transport_benchmark.md`](transport_benchmark.md).
+> - **`expandable_segments`** is wanted only by the gloo fallback; the CUDA
+>   IPC default actively disables it (IPC needs plain `cudaMalloc` memory).
+> - The phase plan completed (Phases 0-8) plus follow-up rounds 1-9; the
+>   `--full` matrix is GPU-green. `implementation_log.md` is the source of
+>   truth for what actually happened. Original text below is kept for the
+>   design rationale and flagged inline.
+
 The plan is **phased**: each phase is independently runnable and testable. Do
-not skip ahead — Phase 3 (NCCL P2P) is far easier to debug if Phases 1 and 2
-have been validated standalone first.
+not skip ahead — Phase 3 (the data plane) is far easier to debug if Phases 1
+and 2 have been validated standalone first.
 
 ---
 
@@ -227,6 +244,15 @@ in the first hour of Phase 2 — it may pull the schedule.
 ---
 
 ## Phase 3 — NCCL P2P data plane (smoke test on dummy tensors)
+
+> ⚠️ **Superseded (see top banner).** Same-GPU NCCL P2P is impossible —
+> NCCL rejects two ranks on one physical GPU. The shipped data plane is
+> **CUDA IPC (default)** / **gloo CPU-staging (fallback)** over a gloo
+> `meta_group`, *not* NCCL `send`/`recv` on the union world. The
+> `nccl_data_fetcher.py` / `nccl_hidden_states_connector.py` module names
+> below are historical; the NCCL batched path they still contain is used
+> only by the separate-GPU Phase-3 dummy test. See implementation_log
+> rounds 1, 7, 9 and `transport_benchmark.md`.
 
 **Goal.** Engine sends a fixed dummy tensor, trainer receives it, contents
 match. No model code involved.

@@ -13,6 +13,35 @@
 CUDA 相关的术语（SM、context、stream、MPS daemon、allocator、设备内拷贝……）
 觉得"过得太快"的人。
 
+> ⚠️ **Cross-check — updated 2026-05-21.** Two claims below are now
+> wrong and flagged inline:
+> 1. **"Intra-device NCCL P2P is cheap"** — there is no such thing. NCCL
+>    refuses a communicator with two ranks on one physical GPU, so
+>    same-GPU NCCL `send`/`recv` cannot run at all. The colocate
+>    hidden-state transport is **CUDA IPC** (default; a real on-device
+>    `cudaMemcpyDeviceToDevice` after a handle exchange) or **gloo
+>    CPU-staging** (fallback). The "device-to-device copy is nearly free"
+>    intuition is correct — it just is not reached *via NCCL*.
+> 2. **"`expandable_segments:True` is mandatory for colocate"** — no
+>    longer true. The default **CUDA IPC** transport needs plain
+>    `cudaMalloc` memory and the colocate path **disables**
+>    `expandable_segments`; only the gloo fallback wants it.
+>
+> The MPS, context, stream, allocator, and CUDA-VMM material is all still
+> accurate. See [`transport_benchmark.md`](transport_benchmark.md) and
+> [`implementation_log.md`](implementation_log.md) rounds 1 / 7 / 9.
+>
+> 🇨🇳 **交叉核对 —— 2026-05-21 更新。** 下文有两处现在是错的，已就地标注：
+> ① **"同卡 NCCL P2P 几乎免费"** —— 根本不存在这回事。NCCL 拒绝"同一张
+> 物理 GPU 上两个 rank"的 communicator，同卡 NCCL `send`/`recv` 压根跑
+> 不起来。colocate 的 hidden-state 传输是 **CUDA IPC**（默认；句柄交换后
+> 做一次真正的 `cudaMemcpyDeviceToDevice`）或 **gloo CPU 中转**（回退）。
+> "设备内拷贝几乎免费"这个直觉本身没错 —— 只是不经由 NCCL 达成。
+> ② **"`expandable_segments:True` 是 colocate 必选项"** —— 不再成立。
+> 默认的 **CUDA IPC** 传输需要普通 `cudaMalloc` 显存，colocate 路径会
+> **关闭** `expandable_segments`；只有 gloo 回退才需要它。
+> MPS、context、stream、allocator、CUDA 虚拟内存等内容依然正确。
+
 ---
 
 ## 1. GPU hardware in 5 minutes
@@ -258,6 +287,19 @@ finished." PyTorch's caching allocator uses events internally to track
 
 ### Why intra-device NCCL P2P is so cheap
 ### 为什么"同卡 NCCL P2P"几乎免费
+
+> ⚠️ **This section is wrong — see the top banner.** NCCL does *not* have
+> a same-GPU `send`/`recv` fast path; it rejects two ranks on one
+> physical GPU outright. The colocate hidden-state transport reaches the
+> on-device `cudaMemcpyDeviceToDevice` a different way — **CUDA IPC**
+> (export a handle, map the peer's memory, one D→D copy) or **gloo
+> CPU-staging**. The bandwidth intuition below is right; the "via NCCL"
+> framing is not. Kept for the intuition; see
+> [`transport_benchmark.md`](transport_benchmark.md).
+> 🇨🇳 **本节有误 —— 见顶部说明。** NCCL 没有同卡 `send`/`recv` 快速路径，
+> 它直接拒绝同卡两 rank。colocate 是通过 **CUDA IPC**（导出句柄、映射对端
+> 显存、做一次 D→D 拷贝）或 **gloo CPU 中转**达成设备内拷贝的。下文的带宽
+> 直觉没错，错的是"经由 NCCL"这个说法。保留以说明直觉。
 
 When sender and receiver of `dist.send/recv` happen to be on the same
 physical GPU (and in colocate, **they always are**), NCCL detects this and
@@ -508,6 +550,14 @@ For colocate, `expandable_segments:True` is the only one that's not optional.
 
 🇨🇳 对 colocate 来说，**`expandable_segments:True` 是必选项**，其它按情况调。
 
+> ⚠️ **Outdated (see top banner).** True only for the **gloo** fallback
+> transport. The default **CUDA IPC** transport needs plain `cudaMalloc`
+> memory — colocate sets `expandable_segments:False` for IPC actors — so
+> it is *not* universally mandatory.
+> 🇨🇳 **已过时（见顶部）**：这只对 **gloo** 回退传输成立。默认的 **CUDA IPC**
+> 传输需要普通 `cudaMalloc` 显存，colocate 会给 IPC 进程设
+> `expandable_segments:False`，所以它并非永远必选。
+
 ### `set_per_process_memory_fraction`
 ### 硬上限：`set_per_process_memory_fraction`
 
@@ -676,6 +726,16 @@ sanity, you want to see `via P2P/IPC` between paired ranks.
 `via NET/Socket`、`via NVLS` 等。colocate 健康检查时，你希望看到 paired ranks
 之间是 **`via P2P/IPC`**。如果看到 `NET/Socket`，说明 colocate 没生效。
 
+> ⚠️ **Outdated (see top banner).** In colocate there is **no** NCCL P2P
+> between the paired engine/trainer ranks — the hidden-state transport is
+> CUDA IPC / gloo, not NCCL `send`/`recv`. The `via P2P/IPC` check
+> applies only to the separate-GPU Phase-3 dummy P2P test. `NCCL_DEBUG`
+> is still useful for the union-world bootstrap and the FSDP collectives.
+> 🇨🇳 **已过时（见顶部）**：colocate 里配对的引擎/训练 rank 之间**没有**
+> NCCL P2P —— hidden-state 走 CUDA IPC / gloo。这个 `via P2P/IPC` 检查只
+> 适用于分卡的 Phase-3 dummy P2P 测试；`NCCL_DEBUG` 对 union-world 启动和
+> FSDP 集合通信仍然有用。
+
 ---
 
 ## 9. Putting it all together: the colocate "stack"
@@ -736,7 +796,7 @@ Every layer in that stack solves a specific problem the layer above creates:
 | sglang computes its budget from "free" at start | **Init trainer first**, then engine |
 | FSDP and P2P share default stream → serialise | **Dedicated `transfer_stream`** |
 | Engine ranks accidentally pulled into FSDP collectives | **FSDP DP subgroup**, not union world |
-| Need same-GPU send/recv to be cheap | **NCCL intra-device fast path** (automatic) |
+| Need same-GPU hidden-state handoff to be cheap | ~~NCCL intra-device fast path~~ → **CUDA IPC** zero-copy handoff (default) / gloo CPU-staging (fallback). NCCL can't span one physical GPU — see top banner. |
 
 🇨🇳 表格说明每一层各解决什么问题——出 bug 时按这张表逆向定位很快。
 

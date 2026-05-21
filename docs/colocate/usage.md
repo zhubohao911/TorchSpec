@@ -2,13 +2,24 @@
 
 > Run a TorchSpec spec-decoding training job where the trainer and the
 > sglang inference engine share the same physical GPUs via NVIDIA MPS,
-> with hidden states crossing the boundary over NCCL P2P (no Mooncake).
+> with hidden states crossing the boundary on-device (no Mooncake).
 >
 > **Status:** the TorchSpec side of the path lands in this PR; the
 > end-to-end run also requires an upstream sglang patch — see
 > [`sglang_patch.md`](sglang_patch.md). Without that patch, init succeeds
-> but the first step hangs on `dist.batch_isend_irecv` (the engine never
-> sends).
+> but the first step hangs (the engine never sends).
+>
+
+> ⚠️ **Transport — updated 2026-05-21.** This guide originally said hidden
+> states cross "over NCCL P2P". That turned out to be impossible: NCCL
+> hard-rejects a communicator with two ranks on one physical GPU
+> (`ncclInvalidUsage`, "Duplicate GPU detected"). The hidden-state plane
+> is now **CUDA IPC zero-copy by default** (gloo CPU-staged is the
+> opt-out fallback) — see *Hidden-state transport* below, plus
+> [`transport_benchmark.md`](transport_benchmark.md) and
+> [`implementation_log.md`](implementation_log.md) rounds 1/7/9. Older
+> "NCCL P2P" wording elsewhere in this file is kept for history and
+> flagged inline.
 >
 > Background reading:
 > - [`knowledge.md`](knowledge.md) — what MPS / NCCL / fractional Ray
@@ -46,6 +57,10 @@ Mooncake transport) when:
   actor comes up; you should not start it manually.
 - `expandable_segments:True` for the PyTorch CUDA allocator (set via
   `PYTORCH_CUDA_ALLOC_CONF`). The example `run.sh` does this for you.
+  ⚠️ *Update (2026-05-21): only the **gloo** fallback transport wants
+  `expandable_segments`. With the default CUDA IPC transport the colocate
+  path actively disables it (IPC needs plain `cudaMalloc` memory) — see*
+  Hidden-state transport *below.*
 - `torch ≥ 2.4`, `sglang` with the colocate patch from
   [`sglang_patch.md`](sglang_patch.md).
 
@@ -67,8 +82,12 @@ Each GPU `i` ∈ `[0, N)` runs both:
 
 The Phase-2 `init_union_world` helper builds this `2N`-rank world; FSDP
 collectives go on the `[0, N)` subgroup; metadata broadcasts go on a
-gloo `[0, 2N)` subgroup. Hidden states cross via P2P on the union
-default group between `i` and `N+i`.
+gloo `[0, 2N)` subgroup. Hidden states cross between `i` and `N+i` over
+that gloo `meta_group` — by default as a **CUDA IPC** zero-copy handoff,
+with gloo CPU-staging as the opt-out fallback. (⚠️ *Update 2026-05-21:
+earlier drafts said "via P2P on the union NCCL default group" — that is
+wrong; NCCL cannot form a communicator with two ranks on one physical
+GPU. See* Hidden-state transport *below.*)
 
 If you violate the invariant (e.g. `tp_size>1`), Phase-0 validation in
 `train_entry.parse_config()` errors out with the offending product.
@@ -132,7 +151,7 @@ The four colocate-specific fields (Phase 0):
 | Field | Default | Required when colocate | Description |
 |---|---|---|---|
 | `training.colocate_strategy` | `null` | yes (`"mps"`) | Set to `"mps"` to enable MPS-based colocate. |
-| `training.transfer_mode` | `"mooncake"` | yes (`"nccl"`) | Set to `"nccl"` to use the union-world P2P data plane. |
+| `training.transfer_mode` | `"mooncake"` | yes (`"nccl"`) | Set to `"nccl"` for the colocate union-world data plane. ⚠️ The `"nccl"` value name is historical — the actual hidden-state transport is CUDA IPC (default) or gloo CPU-staging, not NCCL P2P; see *Hidden-state transport*. |
 | `training.train_frac` | `null` | yes | Trainer per-process memory fraction, `(0, 1)`. |
 | `training.infer_frac` | `null` | yes | Engine `mem_fraction_static`, `(0, 1)`. |
 
@@ -183,8 +202,8 @@ Compared to the disaggregated path:
 6. **Controller** — `setup_colocate_training_with_engines` is used in
    place of `setup_async_training_with_engines`. The
    `AsyncInferenceManager` and Mooncake master are not started; the
-   step loop is strictly serialised (engine forwards → P2P send →
-   trainer recv → fwd/bwd). The synchronous loop body itself is the
+   step loop is strictly serialised (engine forwards → hidden-state
+   transfer → trainer recv → fwd/bwd). The synchronous loop body is the
    one piece that's gated on the upstream sglang patch — see
    [Known limitations](#known-limitations) below.
 
@@ -208,6 +227,14 @@ exercised by these Modal smoke tests (`scripts/modal/modal_colocate_smoke.py`,
 Anything green in `implementation_log.md` runs without the upstream
 patch. Anything still ⬜ in that doc is gated on it.
 
+> ⚠️ *Update (2026-05-21): this Modal-smoke table is the early
+> "patch-in-flight" era. The upstream patch landed; the colocate path is
+> now GPU-validated end-to-end across ~12 rented-GPU sessions — see
+> [`implementation_log.md`](implementation_log.md) rounds 1-9. The
+> `run_smoke_host.sh --full` matrix is green under the CUDA IPC default.
+> The `phase7_grad_parity` "placeholder" row is done — `test_grad_parity.py`
+> covers determinism, gloo-vs-IPC parity, and colocate-vs-disagg parity.*
+
 ## Known limitations
 
 - **Multi-node is implemented but untested at scale.** The union-world
@@ -216,10 +243,12 @@ patch. Anything still ⬜ in that doc is gated on it.
   Ray node; `configs/colocate_qwen3_8b_2node.yaml` is the 2-node
   example. A true 2-node run has not been validated — single-node is
   the only exercised path.
-- **Engine `tp_size > 1` is partial.** The union-world rank math
-  (`engine_global_rank`, `build_engine_tp_ranks`) handles any TP size,
-  but the data plane — partitioning each step's requests across an
-  engine's TP ranks — is not wired. Use `inference_num_gpus_per_engine=1`.
+- ~~**Engine `tp_size > 1` is partial.**~~ ✅ *Resolved (2026-05-21).*
+  The union-world rank math (`engine_global_rank`, `build_engine_tp_ranks`)
+  **and** the data plane — partitioning each step's requests across an
+  engine's TP ranks — are complete and GPU-validated (`engine_tp_size=2`
+  and 2-engine fan-out both pass; implementation_log rounds 2-5).
+  `inference_num_gpus_per_engine=1` is no longer required.
 - **sglang only.** No vLLM colocate path; nothing in
   `mooncake_hidden_states_connector.py` (vLLM KV connector) is
   affected.
