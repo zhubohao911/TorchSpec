@@ -40,6 +40,7 @@ Out of scope here (parked for Phase 5 follow-ups):
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -332,6 +333,18 @@ def run_colocate_training_loop(
         if metrics:
             metrics["train/step"] = completed_steps
             metrics["inference/step"] = completed_steps
+
+            # Optional per-step loss-curve trace, env-gated so it is
+            # silent in normal runs. Consumed by the colocate-vs-disagg
+            # convergence test (tests/colocate/test_convergence.py),
+            # which needs an identically-formatted loss point from both
+            # this colocate loop and the disaggregated loop.
+            if os.environ.get("TORCHSPEC_LOSS_CURVE_LOG"):
+                _lc = metrics.get("train/avg_loss")
+                if _lc is not None:
+                    logger.info("[loss_curve] step=%d loss=%.6f",
+                                completed_steps, float(_lc))
+
             if enable_perf:
                 step_dt = time.time() - t_step
                 metrics["perf/step_time"] = step_dt

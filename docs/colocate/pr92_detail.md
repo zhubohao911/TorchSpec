@@ -24,8 +24,8 @@ Every phase is gated behind `colocate_strategy=mps` + `transfer_mode=nccl` so th
 - [x] Phase 3 — P2P data plane (smoke test)
 - [x] Phase 4 — sglang hidden-state hook
 - [x] Phase 5 — controller / sync training loop
-- [x] Phase 6 — memory caps & stability — **`test_phase6_peak_alloc_flatness` PASSED (200 steps)**
-- [x] Phase 7 — numeric parity & convergence — **`test_phase7_convergence_loss_decreases` PASSED (50 steps), `test_phase7_grad_parity_smoke` PASSED**
+- [x] Phase 6 — memory caps & stability — **`test_phase6_peak_alloc_flatness` PASSED (200 steps; 1000-step `--stability` GREEN, round 11)**
+- [x] Phase 7 — numeric parity & convergence — **`test_phase7_convergence_loss_decreases` PASSED (50 steps), `test_phase7_grad_parity_smoke` PASSED, `test_convergence_disagg_overlap` GREEN (1000 steps vs Mooncake, round 11)**
 - [x] Phase 8 — docs & example config
 
 ## Test results — full suite GREEN on 4×H100
@@ -264,19 +264,45 @@ investigated for further headroom — full write-up in
   (2 engines × tp2, 4×H100 MPS-shared), CUDA IPC default: 3000/3000
   steps, no hang, step time and `peak_alloc` flat throughout.
 
+## One-pod batch validation (round 11)
+
+Round 11 productionized `ipc-pipe`, added the convergence-vs-Mooncake
+test, and GPU-validated four issue-#81 follow-ups in one 4×H100
+secure-cloud pod session (~1.6 h, ~$21). Full results in
+[`handoff_followups.md`](docs/colocate/handoff_followups.md).
+
+- **`ipc-pipe` is now production-wired.** `IpcPipelineTransport` in
+  `cuda_ipc.py` (send-buffer pool + handle cache + one-step ack deferral)
+  is wired into the connector + fetcher behind the opt-in
+  `TORCHSPEC_COLOCATE_IPC_PIPELINE` flag (default off). Teardown-safe
+  without a flush, so no sglang-patch change was needed.
+- **One bug found and fixed.** `--full` with the flag passed 12/13;
+  `test_phase6_peak_alloc_flatness` OOM'd the memory-tight Qwen3-8B
+  config — the pool's variable-`seq_len` resize retired buffers without
+  freeing them, and the ×2 grow overshoot stacked on sglang's KV cache.
+  Fixed: exact-size grow + retired buffers freed one step after the
+  trainer acks the resize. Re-test GREEN (peak-alloc flat ~25.75 GB).
+- **#3 `--stability` 1000-step** — GREEN (exit 0). **#6
+  `grad_parity_smoke`** (Qwen3-8B) — GREEN in `--full` with `HF_TOKEN`.
+- **#4 convergence vs Mooncake** — `test_convergence_disagg_overlap`
+  ran 1000 steps each arm: colocate vs disagg loss curves overlap at
+  **mean 0.006 % / max 0.219 %** deviation — the colocate transport
+  converges identically to the disaggregated baseline.
+
 ## Open follow-ups (tracked, not blocking this PR)
 
 | Follow-up | Why it's open |
 |-----------|---------------|
 | Multi-node 2-node colocate run | code-complete (`ensure_mps_on_all_nodes`, 2-node config) but untested at scale — needs a 2-node rented cluster with cross-node networking |
-| v0.5.10 `pp_size>1` | `v0.5.10.post1/colocate.patch` passed the full 4×H100 `--full` matrix (13/13) and is now the default; only `pp_size>1` (pipeline parallelism) is unexercised — blocked by an explicit guard, out of scope for the current colocate plan |
-| Literal Mooncake-disagg grad parity | the design-doc "vs disagg" comparison. The Mooncake crash that blocked it is **fixed** in round 6 (pin `mooncake-transfer-engine==0.3.10.post1` — go1.25 regression). What remains is to rebuild the colocate-vs-disagg per-parameter gradient comparison test that was removed in the `grad_parity_full` reframe; the gloo-vs-IPC `grad_parity_full` covers per-parameter parity in the meantime |
+| Large `engine_tp_size` (8-GPU TP per engine) | rank math + data plane handle any TP size but are only GPU-tested at `engine_tp_size=2`; issue-#81 scale-out wants 1 engine × 8-GPU TP — needs an 8-GPU config + run |
+| v0.5.10 `pp_size>1` | `v0.5.10.post1/colocate.patch` passed the full 4×H100 `--full` matrix and is now the default; only `pp_size>1` (pipeline parallelism) is unexercised — blocked by an explicit guard, out of scope for the current colocate plan |
+| ~~Literal Mooncake-disagg parity~~ | ✅ **Done.** Per-parameter gradient parity vs the disagg baseline is covered by `test_phase7_grad_parity_vs_disagg` (1-step), and the 1k-step convergence-curve comparison by `test_convergence_disagg_overlap` — GPU-validated round 11 (loss curves overlap mean 0.006 % over 1000 steps). The Mooncake crash that blocked this was fixed in round 6 (`mooncake-transfer-engine==0.3.10.post1`). |
 | ~~`--full` re-run with CUDA IPC as default~~ | ✅ **Done (round 9).** 4×H100 `run_smoke_host.sh --full` under CUDA IPC default — 13 colocate tests pass after the `e166c21` probe fix + `e62c941` expandable-segments fix. |
-| Productionize `ipc-pipe` (ack pipelining) | benchmark prototype only (round 10) — 3.9× on the engine-`send()` stall, MPS-validated, but low-priority since the transport is ~1 % of a colocate step. Fold into `cuda_ipc.py` behind a `TORCHSPEC_COLOCATE_IPC_PIPELINE` flag if transport latency ever matters — see `transport_optimization.md` |
+| ~~Productionize `ipc-pipe` (ack pipelining)~~ | ✅ **Done (round 11).** Folded into `cuda_ipc.py` as `IpcPipelineTransport` behind the opt-in `TORCHSPEC_COLOCATE_IPC_PIPELINE` flag; GPU-validated on 4×H100 (one OOM bug on the 8B config found + fixed). Opt-in and low-priority — the transport is ~1 % of a colocate step. |
 
 ## Full debug log
 
-[`docs/colocate/implementation_log.md`](https://github.com/lightseekorg/TorchSpec/blob/feature/colocate-training-inference/docs/colocate/implementation_log.md) — RunPod sessions #1-#3 (1×H100 / tiny green) + Vast sessions #4-#5 (4×H100 / full green) + follow-up rounds 1-10 (grad parity, CUDA IPC, multi-engine TP + fan-out, v0.5.10 port + multi-TP validation, RoPE fix, Mooncake crash diagnosis + fix, CUDA-IPC-default switch + transport benchmark, v0.5.10 full-matrix cutover, CUDA-IPC-default hang diagnosis + probe fix, transport optimization investigation + MPS re-benchmark). Transport benchmark detail: [`docs/colocate/transport_benchmark.md`](https://github.com/lightseekorg/TorchSpec/blob/feature/colocate-training-inference/docs/colocate/transport_benchmark.md).
+[`docs/colocate/implementation_log.md`](https://github.com/lightseekorg/TorchSpec/blob/feature/colocate-training-inference/docs/colocate/implementation_log.md) — RunPod sessions #1-#3 (1×H100 / tiny green) + Vast sessions #4-#5 (4×H100 / full green) + follow-up rounds 1-10 (grad parity, CUDA IPC, multi-engine TP + fan-out, v0.5.10 port + multi-TP validation, RoPE fix, Mooncake crash diagnosis + fix, CUDA-IPC-default switch + transport benchmark, v0.5.10 full-matrix cutover, CUDA-IPC-default hang diagnosis + probe fix, transport optimization investigation + MPS re-benchmark, ipc-pipe productionization + one-pod GPU validation of issue-#81 follow-ups). Transport benchmark detail: [`docs/colocate/transport_benchmark.md`](https://github.com/lightseekorg/TorchSpec/blob/feature/colocate-training-inference/docs/colocate/transport_benchmark.md).
 
 
 

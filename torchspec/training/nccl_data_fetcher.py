@@ -47,7 +47,13 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 import torch
 import torch.distributed as dist
 
-from torchspec.colocate.cuda_ipc import ensure_ipc_usable, ipc_enabled, ipc_recv
+from torchspec.colocate.cuda_ipc import (
+    IpcPipelineTransport,
+    ensure_ipc_usable,
+    ipc_enabled,
+    ipc_pipeline_enabled,
+    ipc_recv,
+)
 
 logger = logging.getLogger("torchspec.training.nccl_data_fetcher")
 
@@ -282,12 +288,27 @@ class NcclMultiTensorFetcher:
         # CUDA IPC transport — the default; must match the engine
         # connector. Fail fast at construction if it is unusable.
         self._use_ipc = ipc_enabled() and _group_is_gloo(self._group)
+        # Pipelined transport (pool + ack pipelining): opt-in, stateful.
+        # Must agree with the engine connector — both read the same env.
+        self._pipeline: Optional[IpcPipelineTransport] = None
         if self._use_ipc:
             ensure_ipc_usable()
+            if ipc_pipeline_enabled():
+                self._pipeline = IpcPipelineTransport(role="trainer")
 
     @property
     def src_global_rank(self) -> int:
         return self._src
+
+    def flush(self) -> None:
+        """Drain the pipelined transport at loop teardown.
+
+        No-op unless the pipelined transport is active. Waits the last
+        outstanding ack ``isend``; the pipeline is drain-safe without it
+        (see :class:`IpcPipelineTransport`), so this is a tidiness call.
+        """
+        if self._pipeline is not None:
+            self._pipeline.flush()
 
     def recv_step(self, tensor_specs: Dict[str, TensorSpec]) -> Dict[str, torch.Tensor]:
         """Receive one step's worth of tensors and return them as a dict.
@@ -314,6 +335,16 @@ class NcclMultiTensorFetcher:
             # Zero-copy: map the engine's GPU memory via CUDA IPC and
             # copy on-device into trainer-owned buffers. No host
             # round-trip.
+            if self._pipeline is not None:
+                # Pipelined: reuse the cached pool-buffer mapping, ack
+                # with a non-blocking isend.
+                logger.debug(
+                    "NcclMultiTensorFetcher.recv_step (cuda-ipc-pipeline): "
+                    "src=%d names=%s", self._src, names,
+                )
+                return self._pipeline.trainer_recv(
+                    tensor_specs, self._src, self._device, self._group
+                )
             logger.debug(
                 "NcclMultiTensorFetcher.recv_step (cuda-ipc): src=%d names=%s",
                 self._src, names,

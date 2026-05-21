@@ -76,6 +76,13 @@ _IPC_ENV = "TORCHSPEC_COLOCATE_IPC"
 # Env values that disable IPC and fall back to the gloo transport.
 _IPC_DISABLE_VALUES = ("0", "false", "no", "off")
 
+# Opt-in flag for the pipelined transport (send-buffer pool + one-step
+# ack pipelining — see :class:`IpcPipelineTransport`). Layered on top of
+# CUDA IPC; default off, so the plain per-step ipc_send / ipc_recv path
+# is unchanged unless this is explicitly set.
+_IPC_PIPELINE_ENV = "TORCHSPEC_COLOCATE_IPC_PIPELINE"
+_IPC_PIPELINE_ENABLE_VALUES = ("1", "true", "yes", "on")
+
 # Cached (ok, reason) from the one-time capability probe.
 _probe_cache: Optional[Tuple[bool, str]] = None
 
@@ -90,6 +97,31 @@ def ipc_enabled() -> bool:
     the gloo CPU-staged transport.
     """
     return os.environ.get(_IPC_ENV, "").strip().lower() not in _IPC_DISABLE_VALUES
+
+
+def ipc_pipeline_enabled() -> bool:
+    """True iff the pipelined CUDA IPC transport is selected.
+
+    Opt-in via ``TORCHSPEC_COLOCATE_IPC_PIPELINE`` (``1`` / ``true`` /
+    ``yes`` / ``on``). The pipelined path (:class:`IpcPipelineTransport`)
+    is layered *on top of* CUDA IPC — a send-buffer pool plus one-step ack
+    deferral — so it is only active when IPC itself is enabled
+    (:func:`ipc_enabled`). Default off: with the flag unset, the engine
+    connector and trainer fetcher use the plain per-step :func:`ipc_send`
+    / :func:`ipc_recv` path, unchanged.
+
+    See ``docs/colocate/transport_optimization.md`` (Opt 1 + Opt 2): the
+    pool gives the engine a stable IPC handle so the trainer skips the
+    per-step ``cudaIpcOpenMemHandle``, and the one-step ack deferral
+    lifts the ~1 ms ack round-trip off the engine's critical path
+    (MPS-measured 3.9x on the realistic Eagle3 engine-``send()`` stall).
+    """
+    if not ipc_enabled():
+        return False
+    return (
+        os.environ.get(_IPC_PIPELINE_ENV, "").strip().lower()
+        in _IPC_PIPELINE_ENABLE_VALUES
+    )
 
 
 def probe_ipc_capability() -> Tuple[bool, str]:
@@ -277,3 +309,306 @@ def ipc_recv(
     ack = torch.ones(1, dtype=torch.uint8)
     dist.send(ack, dst=src, group=group, tag=_IPC_ACK_TAG)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Pipelined transport — send-buffer pool + one-step ack pipelining
+# ---------------------------------------------------------------------------
+#
+# This is the optimized counterpart to the plain ipc_send / ipc_recv pair
+# above, selected by `TORCHSPEC_COLOCATE_IPC_PIPELINE=1`
+# (:func:`ipc_pipeline_enabled`). Unlike the stateless functions, it must
+# carry state across steps (the pool, the trainer's handle cache, the
+# deferred ack), so it is a class — one long-lived instance per connector
+# (engine role) / fetcher (trainer role).
+#
+# Wire tags are kept distinct from the plain path's 7001-7003 so the two
+# protocols can never collide if both happen to be linked into a process.
+_PIPE_LEN_TAG = 7011
+_PIPE_DATA_TAG = 7012
+_PIPE_ACK_TAG = 7013
+
+# Double-buffered: slot s is reused every _PIPELINE_SLOTS steps. K=2 is
+# the minimum that lets the engine defer one ack — step N writes slot
+# N % 2 while step N-1's ack (slot (N-1) % 2) is still in flight.
+_PIPELINE_SLOTS = 2
+
+
+def _send_pickle(obj, dst, group, len_tag: int, data_tag: int) -> None:
+    """Ship a picklable object as a length-framed byte tensor over gloo.
+
+    Mirrors :func:`ipc_send`'s framing — ``send_object_list`` was observed
+    to deadlock on the colocate gloo group, so we pickle + frame by hand.
+    """
+    import pickle
+
+    import torch
+    import torch.distributed as dist
+
+    blob = bytearray(pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL))
+    buf = torch.frombuffer(blob, dtype=torch.uint8)
+    dist.send(torch.tensor([buf.numel()], dtype=torch.long),
+              dst=dst, group=group, tag=len_tag)
+    dist.send(buf, dst=dst, group=group, tag=data_tag)
+
+
+def _recv_pickle(src, group, len_tag: int, data_tag: int):
+    """Inverse of :func:`_send_pickle`."""
+    import pickle
+
+    import torch
+    import torch.distributed as dist
+
+    length = torch.empty(1, dtype=torch.long)
+    dist.recv(length, src=src, group=group, tag=len_tag)
+    buf = torch.empty(int(length.item()), dtype=torch.uint8)
+    dist.recv(buf, src=src, group=group, tag=data_tag)
+    return pickle.loads(buf.numpy().tobytes())
+
+
+class IpcPipelineTransport:
+    """Stateful pipelined CUDA IPC transport — pool + one-step ack deferral.
+
+    The plain :func:`ipc_send` / :func:`ipc_recv` pair is stateless: every
+    step exports a fresh IPC handle and the engine blocks on the trainer's
+    ack inside ``send()``. This class is the optimized alternative
+    (``TORCHSPEC_COLOCATE_IPC_PIPELINE=1``) — it carries state across
+    steps and implements both protocol-level optimizations from
+    ``docs/colocate/transport_optimization.md``:
+
+    * **Send-buffer pool (Opt 1).** The engine owns ``K = 2`` persistent
+      CUDA buffers per tensor name. Each step it copies the engine's
+      transient hidden states into ``pool[step % K]`` (one D->D copy) and
+      exports that *pooled* buffer's IPC handle. Pool buffers have stable
+      device pointers, so their handle args are computed **once** and the
+      trainer opens each handle (``cudaIpcOpenMemHandle``) **once**,
+      caching the mapping for every later step.
+
+    * **Ack pipelining (Opt 2).** The trainer acks with a non-blocking
+      ``isend``; the engine collects the *previous* step's ack instead of
+      this step's, so the ~1 ms ack round-trip overlaps the engine's next
+      forward instead of stalling ``send()``. ``K = 2`` guarantees step N
+      never lands in the slot whose step N-1 ack is still outstanding.
+
+    Variable ``seq_len`` is handled by sizing each pool buffer to the
+    largest payload seen so far (grow-to-fit, sized *exactly* — no x2
+    overshoot, which on a memory-tight config stacks unaffordably with
+    sglang's KV cache). A resize re-exports that slot's handle (the
+    trainer re-opens it once) and *retires* the old buffer; the retired
+    buffer is freed one step later, the moment the trainer acks the
+    resize step — by then it has re-opened the new handle and dropped its
+    mapping of the old one, so the free can never race a live mapping and
+    a variable-``seq_len`` run does not accumulate dead pool buffers.
+
+    **Teardown is drain-safe without an explicit flush.** The engine never
+    blocks on the final ack: an un-collected ack would only matter to
+    guard a step N+2 that never happens, and the trainer has already
+    ``cuda.synchronize()``-d its copy before sending it, so the engine
+    freeing its pool on exit cannot corrupt anything. The trainer waits
+    its previous ``isend`` before each new one, so at most one 1-byte ack
+    is ever in flight. :meth:`flush` waits that last ``isend`` for a tidy
+    teardown; skipping it is harmless.
+
+    One instance per :class:`NcclHiddenStatesConnector` (``role="engine"``)
+    or :class:`NcclMultiTensorFetcher` (``role="trainer"``). The class has
+    no torchspec-internal imports so the transport benchmark
+    (``scripts/colocate/bench_transport.py``) can load this module
+    standalone.
+    """
+
+    def __init__(self, role: str):
+        if role not in ("engine", "trainer"):
+            raise ValueError(
+                f"IpcPipelineTransport role must be 'engine' or 'trainer', "
+                f"got {role!r}"
+            )
+        self.role = role
+        self._step = 0
+        # -- engine-role state --------------------------------------------
+        self._pool: Dict[str, list] = {}        # name -> [K] flat CUDA buffers
+        self._pool_args: Dict[str, list] = {}   # name -> [K] reduce_tensor args
+        self._shipped: set = set()              # (name, slot) handles shipped
+        self._retired: list = []                # [(step, buf)] awaiting free
+        self._pending_ack = False               # a deferred ack is outstanding
+        # -- trainer-role state -------------------------------------------
+        self._mapping: Dict[tuple, "torch.Tensor"] = {}  # noqa: F821
+        self._ack_req = None                    # in-flight ack isend handle
+        self._ack_buf = None                    # tensor kept alive for the isend
+
+    # -- engine ------------------------------------------------------------
+
+    def _ensure_slot(self, name: str, slot: int, numel: int, dtype,
+                     reduce_tensor) -> None:
+        """Make ``pool[name][slot]`` exactly big enough for ``numel`` elements.
+
+        Allocates on first use; on overflow reallocates to exactly
+        ``numel`` (grow-to-fit, no overshoot) and retires the old buffer
+        tagged with the current step — :meth:`engine_send` frees it once
+        the trainer acks that step. A (re)allocation drops the slot from
+        ``_shipped`` so the next send re-exports the handle.
+        """
+        import torch
+
+        bufs = self._pool.get(name)
+        if bufs is None:
+            bufs = [None] * _PIPELINE_SLOTS
+            self._pool[name] = bufs
+            self._pool_args[name] = [None] * _PIPELINE_SLOTS
+        buf = bufs[slot]
+        if buf is not None and buf.numel() >= numel and buf.dtype == dtype:
+            return
+        if buf is not None:
+            # Retire (tagged with the current step) rather than free now:
+            # the trainer may still hold an IPC mapping of the old buffer
+            # until it processes this step's re-ship. engine_send frees it
+            # once the trainer acks this step (CUDA IPC UB otherwise).
+            self._retired.append((self._step, buf))
+        # Exact size — no x2 overshoot. The overshoot is unaffordable on a
+        # memory-tight config (it stacks with sglang's KV cache); grow-to-
+        # fit still holds, we only reallocate on a genuine new seq_len high.
+        new_buf = torch.empty(numel, dtype=dtype, device="cuda")
+        bufs[slot] = new_buf
+        self._pool_args[name][slot] = reduce_tensor(new_buf)[1]
+        self._shipped.discard((name, slot))
+
+    def engine_send(self, tensors: Dict[str, "torch.Tensor"],  # noqa: F821
+                    dst: int, group) -> None:
+        """Engine side: ship hidden-state tensors to ``dst`` (pipelined).
+
+        Returns as soon as the handle message is on the wire — the ack of
+        *this* step is collected at the start of the *next* call (or by
+        :meth:`flush`). Same lifetime contract as :func:`ipc_send`: the
+        caller's tensors are fully consumed (copied into the pool) before
+        this returns, so sglang is free to reuse them immediately.
+        """
+        import torch
+        import torch.distributed as dist
+        from torch.multiprocessing.reductions import reduce_tensor
+
+        if self.role != "engine":
+            raise RuntimeError("engine_send called on a trainer-role transport")
+        if not tensors:
+            raise ValueError(
+                "IpcPipelineTransport.engine_send requires at least one tensor"
+            )
+
+        slot = self._step % _PIPELINE_SLOTS
+        msg = []
+        for name in sorted(tensors.keys()):
+            t = tensors[name].detach()
+            if t.device.type != "cuda":
+                raise ValueError(
+                    f"IpcPipelineTransport requires CUDA tensors; '{name}' is "
+                    f"on {t.device}"
+                )
+            flat = t.reshape(-1)
+            numel = flat.numel()
+            self._ensure_slot(name, slot, numel, t.dtype, reduce_tensor)
+            self._pool[name][slot][:numel].copy_(flat)
+            key = (name, slot)
+            if key in self._shipped:
+                ship_args = None
+            else:
+                ship_args = self._pool_args[name][slot]
+                self._shipped.add(key)
+            msg.append((name, slot, tuple(t.shape), numel, ship_args))
+
+        # The trainer reads pool[slot] on its own stream; make the copy
+        # device-complete before we signal so the bytes are settled.
+        torch.cuda.synchronize()
+        _send_pickle(msg, dst, group, _PIPE_LEN_TAG, _PIPE_DATA_TAG)
+
+        # Ack pipelining: collect the *previous* step's ack, not this one.
+        if self._pending_ack:
+            ack = torch.zeros(1, dtype=torch.uint8)
+            dist.recv(ack, src=dst, group=group, tag=_PIPE_ACK_TAG)
+            # ack(self._step-1) is in hand: the trainer has finished that
+            # step, including re-opening any handle resized at or before
+            # it and dropping its old IPC alias. Free pool buffers retired
+            # then so a variable-seq_len run does not accumulate dead ones.
+            acked = self._step - 1
+            self._retired = [(s, b) for (s, b) in self._retired if s > acked]
+        self._pending_ack = True
+        self._step += 1
+
+    # -- trainer -----------------------------------------------------------
+
+    def trainer_recv(self, tensor_specs: Dict[str, Tuple],
+                     src: int, device, group) -> Dict[str, "torch.Tensor"]:  # noqa: F821
+        """Trainer side: receive one step's tensors from ``src`` (pipelined).
+
+        Opens each pooled IPC handle only on the first step that uses its
+        slot (or after an engine-side resize); every other step reuses the
+        cached mapping and just does the per-step D->D copy. Acks with a
+        non-blocking ``isend`` the engine collects on its next step.
+        """
+        import torch
+        import torch.distributed as dist
+        from torch.multiprocessing.reductions import rebuild_cuda_tensor
+
+        if self.role != "trainer":
+            raise RuntimeError("trainer_recv called on an engine-role transport")
+
+        msg = _recv_pickle(src, group, _PIPE_LEN_TAG, _PIPE_DATA_TAG)
+        if not isinstance(msg, list):
+            raise RuntimeError(
+                f"IpcPipelineTransport.trainer_recv: expected a list payload, "
+                f"got {type(msg)}"
+            )
+
+        out: Dict[str, torch.Tensor] = {}
+        for name, slot, shape, numel, ship_args in msg:
+            key = (name, slot)
+            if ship_args is not None:
+                # First use of this slot, or the engine resized it — open
+                # the handle and (re)cache the mapping. The old alias, if
+                # any, is dropped here; its engine buffer is retired (not
+                # freed) so this is safe.
+                self._mapping[key] = rebuild_cuda_tensor(*ship_args)
+            elif key not in self._mapping:
+                raise RuntimeError(
+                    f"IpcPipelineTransport.trainer_recv: no cached IPC "
+                    f"mapping for {key} and the engine shipped no handle"
+                )
+            flat = self._mapping[key]
+            out[name] = flat[:numel].view(shape).to(device, copy=True)
+
+        # Finish the D->D copies before we ack — after the ack the engine
+        # may reuse this slot.
+        torch.cuda.synchronize()
+
+        expected = set(tensor_specs.keys())
+        got = set(out.keys())
+        if expected != got:
+            raise RuntimeError(
+                f"IpcPipelineTransport.trainer_recv: key mismatch — expected "
+                f"{sorted(expected)}, got {sorted(got)}"
+            )
+
+        # Non-blocking ack — the engine picks it up on its next step. Wait
+        # the previous isend first so at most one is ever in flight.
+        if self._ack_req is not None:
+            self._ack_req.wait()
+        self._ack_buf = torch.ones(1, dtype=torch.uint8)
+        self._ack_req = dist.isend(
+            self._ack_buf, dst=src, group=group, tag=_PIPE_ACK_TAG
+        )
+        self._step += 1
+        return out
+
+    # -- teardown ----------------------------------------------------------
+
+    def flush(self) -> None:
+        """Drain in-flight pipelined state for a tidy teardown.
+
+        Trainer: wait the last outstanding ack ``isend``. Engine: drop any
+        buffers still on the retired list (their final ack is never
+        collected — see the class docstring on teardown-safety). Idempotent;
+        safe to call any number of times, or not at all.
+        """
+        if self.role == "trainer" and self._ack_req is not None:
+            self._ack_req.wait()
+            self._ack_req = None
+            self._ack_buf = None
+        if self.role == "engine":
+            self._retired.clear()

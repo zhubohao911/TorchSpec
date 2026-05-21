@@ -64,7 +64,13 @@ from typing import Dict, Optional
 import torch
 import torch.distributed as dist
 
-from torchspec.colocate.cuda_ipc import ensure_ipc_usable, ipc_enabled, ipc_send
+from torchspec.colocate.cuda_ipc import (
+    IpcPipelineTransport,
+    ensure_ipc_usable,
+    ipc_enabled,
+    ipc_pipeline_enabled,
+    ipc_send,
+)
 
 logger = logging.getLogger("torchspec.inference.engine.nccl_hidden_states_connector")
 
@@ -114,11 +120,18 @@ class NcclHiddenStatesConnector:
     - the destination global rank (paired trainer in the union world),
     - the union-world default process group (for the actual send).
 
-    The connector is **stateless across calls** in the sense that it
-    holds no per-tensor buffers — it sends the caller's tensors directly.
-    The sglang patch is responsible for managing the lifetime of those
-    tensors (typically: the callback owns them for the duration of the
-    send, then sglang frees them after the callback returns).
+    By default the connector is **stateless across calls** — it holds no
+    per-tensor buffers and sends the caller's tensors directly. The sglang
+    patch manages the lifetime of those tensors (the callback owns them
+    for the duration of the send, then sglang frees them afterwards).
+
+    The exception is the **pipelined transport**
+    (``TORCHSPEC_COLOCATE_IPC_PIPELINE=1``): there the connector holds a
+    persistent :class:`IpcPipelineTransport` (a send-buffer pool), but the
+    lifetime contract to the caller is unchanged — ``send`` still fully
+    consumes the caller's tensors (copies them into the pool) before it
+    returns. Call :meth:`flush` at loop teardown for a tidy shutdown
+    (optional — the pipeline is drain-safe without it).
 
     Args:
         dst_global_rank: Global rank to send to. For engine role rank
@@ -148,12 +161,27 @@ class NcclHiddenStatesConnector:
         # (e.g. expandable_segments active) so the engine and trainer
         # never disagree on the wire format.
         self._use_ipc = ipc_enabled() and _group_is_gloo(self._group)
+        # Pipelined transport (pool + ack pipelining): an opt-in, stateful
+        # alternative to the plain ipc_send. None unless explicitly on.
+        self._pipeline: Optional[IpcPipelineTransport] = None
         if self._use_ipc:
             ensure_ipc_usable()
+            if ipc_pipeline_enabled():
+                self._pipeline = IpcPipelineTransport(role="engine")
 
     @property
     def dst_global_rank(self) -> int:
         return self._dst
+
+    def flush(self) -> None:
+        """Drain the pipelined transport at loop teardown.
+
+        No-op unless the pipelined transport is active. The pipeline is
+        drain-safe without this (see :class:`IpcPipelineTransport`), so a
+        caller that cannot reach a teardown hook may skip it.
+        """
+        if self._pipeline is not None:
+            self._pipeline.flush()
 
     def send(self, tensors: Dict[str, torch.Tensor]) -> None:
         """Send a named-tensor dict to the paired trainer rank.
@@ -188,7 +216,18 @@ class NcclHiddenStatesConnector:
         if self._use_ipc:
             # Zero-copy: ship CUDA IPC handles over gloo, trainer maps
             # our memory and does an on-device D->D copy. No host
-            # round-trip. Blocks until the trainer acks.
+            # round-trip.
+            if self._pipeline is not None:
+                # Pipelined: copy into the send-buffer pool, ship the
+                # pooled handle, defer this step's ack by one step.
+                logger.debug(
+                    "NcclHiddenStatesConnector.send (cuda-ipc-pipeline): "
+                    "dst=%d names=%s", self._dst, names,
+                )
+                self._pipeline.engine_send(tensors, self._dst, self._group)
+                return
+            # Plain CUDA IPC: fresh handle per step, blocks until the
+            # trainer acks.
             logger.debug(
                 "NcclHiddenStatesConnector.send (cuda-ipc): dst=%d names=%s",
                 self._dst, names,

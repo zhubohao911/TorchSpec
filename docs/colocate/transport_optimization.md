@@ -545,13 +545,26 @@ passes again (verified green on the 3000-step pod's build).
    (the benchmark already settled *performance*).
 3. **`ipc-pipe` (pool + ack pipelining) is now MPS-validated — 3.9× on
    the Eagle3 engine-`send()` stall** (Part 5). The step-0 hang was a
-   probe bug (`e166c21`), not the transport. If/when transport latency
-   is worth optimizing, fold `ipc-pipe` into
-   [`cuda_ipc.py`](../../torchspec/colocate/cuda_ipc.py) behind one
-   `TORCHSPEC_COLOCATE_IPC_PIPELINE` flag (it implies the pool), with the
-   `flush()`-at-loop-exit drain and variable-`seq_len` pool-resize
-   handling from Opt 2's correctness notes. Do **not** ship `ipc-pool`
-   alone (break-even, regresses at 256 MB).
+   probe bug (`e166c21`), not the transport. **`ipc-pipe` is now folded
+   into production** — `cuda_ipc.py` carries `IpcPipelineTransport`
+   (pool + cache + one-step ack deferral + variable-`seq_len`
+   grow-to-fit resize), wired into `NcclHiddenStatesConnector` and
+   `NcclMultiTensorFetcher` behind the **opt-in**
+   `TORCHSPEC_COLOCATE_IPC_PIPELINE` flag (default off; the plain
+   `ipc_send`/`ipc_recv` path is unchanged). The design is teardown-safe
+   without an explicit flush (the engine never blocks on the final ack;
+   the trainer keeps ≤1 ack `isend` in flight), so no sglang-patch
+   change was needed — `flush()` exists for tidiness only. **GPU-validated
+   2026-05-21** on a 4×H100 pod (`run_smoke_host.sh --full` with the flag):
+   12/13 colocate tests passed first time; `test_phase6_peak_alloc_flatness`
+   OOM'd the memory-tight Qwen3-8B config — the variable-`seq_len` resize
+   *retired pool buffers without ever freeing them*, and the ×2 grow
+   overshoot stacked on sglang's KV cache. **Fixed**: the resize is now
+   exact-size (no overshoot) and a retired buffer is freed one step later,
+   the moment the trainer acks the resize step. Re-test passed (peak-alloc
+   flat ~25.75 GB, no OOM). **Still low-priority.** Do **not** ship
+   `ipc-pool` alone (break-even, regresses at 256 MB) — the flag
+   deliberately enables the full pool+pipe stack, never the pool by itself.
 4. **Opt 3 / Opt 4 — skip.** Opt 2 already takes the ack to 0.14 ms, so
    the IPC-event ack (Opt 3) has nothing left to win; Opt 4 (static
    metadata) is in the noise.

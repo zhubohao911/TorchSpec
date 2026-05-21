@@ -2427,3 +2427,62 @@ step (round-9 `--full`), so it is not a step-time bottleneck. It is
 **not** wired into `cuda_ipc.py` — it lives as a `bench_transport.py`
 prototype; productionizing it is a tracked follow-up
 ([`handoff_followups.md`](handoff_followups.md)). No C++/CUDA/Triton.
+
+## Follow-up round 11 — ipc-pipe productionized, convergence-vs-Mooncake test, one-pod GPU validation (2026-05-21, RunPod 4×H100)
+
+Round 10 left `ipc-pipe` as a `bench_transport.py` prototype and the
+1k-step convergence-vs-Mooncake comparison unwritten. This round
+productionizes the transport, adds the convergence test, and validates
+issue-#81 follow-up items 3, 4, 6, 7 in one 4×H100 secure-cloud pod
+session. Full results in [`handoff_followups.md`](handoff_followups.md).
+
+### ipc-pipe folded into `cuda_ipc.py`
+
+`bench_transport.py`'s `ipc-pipe` prototype is now `IpcPipelineTransport`
+in [`cuda_ipc.py`](../../torchspec/colocate/cuda_ipc.py) — persistent
+send-buffer pool + trainer handle cache + one-step ack deferral, behind
+the **opt-in** `TORCHSPEC_COLOCATE_IPC_PIPELINE` flag (default off; the
+plain `ipc_send`/`ipc_recv` path is unchanged). Wired into
+`NcclHiddenStatesConnector` and `NcclMultiTensorFetcher`. The design is
+teardown-safe without an explicit flush (the engine never blocks on the
+final ack; the trainer keeps ≤1 ack `isend` in flight), so **no
+sglang-patch change was needed** — the patch only calls the connector's
+public `send()`.
+
+### Convergence-vs-Mooncake test
+
+`test_convergence_disagg_overlap` (`tests/colocate/test_convergence.py`)
+runs the colocate and disagg tiny configs same-seed for `N` steps and
+asserts the loss curves overlap within a tolerance. Both training loops
+(`controller/loop.py`, `controller/colocate_loop.py`) now emit an
+env-gated `[loss_curve] step=N loss=V` line (`TORCHSPEC_LOSS_CURVE_LOG`)
+in one identical format, so the two arms are directly comparable.
+
+### One-pod GPU validation — 4×H100 secure cloud (~1.6 h, ~$21)
+
+| Item | Result |
+|---|---|
+| #6 `grad_parity_smoke` (Qwen3-8B) | GREEN — `--full` matrix, 15 passed / 0 failed, `HF_TOKEN` set |
+| #3 `--stability` 1000-step | GREEN — `run_smoke_host.sh --stability` exit 0, ~321 s, peak-alloc flat |
+| #7 `ipc-pipe` (`--full` + flag) | GREEN after a fix (below) |
+| #4 convergence vs Mooncake, 1000 steps | GREEN — loss curves overlap, mean **0.006 %** / max **0.219 %** deviation (2 % tol) |
+
+### Bug found by #7 — ipc-pipe OOM on the memory-tight 8B config
+
+`--full` with `TORCHSPEC_COLOCATE_IPC_PIPELINE=1` passed 12/13;
+`test_phase6_peak_alloc_flatness` OOM'd the Qwen3-8B config at step
+~198. Root cause in `IpcPipelineTransport`: the pool's variable-`seq_len`
+resize **retired old buffers and never freed them**, and the ×2 grow
+overshoot stacked on top of sglang's near-maxed KV cache. **Fixed** in
+`cuda_ipc.py` — exact-size grow (no ×2 overshoot) + retired buffers
+freed one step later, the moment the trainer acks the resize step (by
+then it has re-opened the new handle and dropped the old IPC alias).
+Re-test (`test_stability.py` with the flag) passed — peak-alloc flat
+~25.75 GB, no OOM, loss converged 12 → 2.
+
+### Outcome
+
+Issue-#81 follow-up items 3, 4, 6, 7 are GPU-validated. Items 1 (2-node)
+and 2 (8-GPU TP) remain — they need different hardware (2 nodes / 8
+GPUs), not code. `ipc-pipe` is production-wired but opt-in and
+low-priority.

@@ -21,13 +21,17 @@ from torchspec.colocate import cuda_ipc
 
 @pytest.fixture(autouse=True)
 def _clean():
-    saved = os.environ.get("TORCHSPEC_COLOCATE_IPC")
+    saved = {
+        k: os.environ.get(k)
+        for k in ("TORCHSPEC_COLOCATE_IPC", "TORCHSPEC_COLOCATE_IPC_PIPELINE")
+    }
     cuda_ipc._reset_probe_cache_for_test()
     yield
-    if saved is None:
-        os.environ.pop("TORCHSPEC_COLOCATE_IPC", None)
-    else:
-        os.environ["TORCHSPEC_COLOCATE_IPC"] = saved
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
     cuda_ipc._reset_probe_cache_for_test()
 
 
@@ -69,3 +73,61 @@ def test_probe_cache_reset_hook():
     cuda_ipc._probe_cache = (True, "stale")
     cuda_ipc._reset_probe_cache_for_test()
     assert cuda_ipc._probe_cache is None
+
+
+# ---------------------------------------------------------------------------
+# Pipelined transport opt-in (TORCHSPEC_COLOCATE_IPC_PIPELINE)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        # Opt-in: only an explicit enable token turns the pipeline on.
+        ("1", True), ("true", True), ("YES", True), ("on", True),
+        (" On ", True),
+        # Anything else — including unset, empty, junk — leaves it off.
+        ("0", False), ("false", False), ("garbage", False), ("", False),
+    ],
+)
+def test_ipc_pipeline_enabled_env_toggle(value, expected):
+    # IPC itself on (default) — the pipeline flag then decides.
+    os.environ.pop("TORCHSPEC_COLOCATE_IPC", None)
+    os.environ["TORCHSPEC_COLOCATE_IPC_PIPELINE"] = value
+    assert cuda_ipc.ipc_pipeline_enabled() is expected
+
+
+def test_ipc_pipeline_unset_defaults_off():
+    os.environ.pop("TORCHSPEC_COLOCATE_IPC", None)
+    os.environ.pop("TORCHSPEC_COLOCATE_IPC_PIPELINE", None)
+    assert cuda_ipc.ipc_pipeline_enabled() is False
+
+
+def test_ipc_pipeline_requires_ipc_enabled():
+    """The pipeline is layered on CUDA IPC — disabling IPC disables it
+    even when the pipeline flag is explicitly on."""
+    os.environ["TORCHSPEC_COLOCATE_IPC"] = "0"
+    os.environ["TORCHSPEC_COLOCATE_IPC_PIPELINE"] = "1"
+    assert cuda_ipc.ipc_enabled() is False
+    assert cuda_ipc.ipc_pipeline_enabled() is False
+
+
+def test_ipc_pipeline_transport_rejects_bad_role():
+    with pytest.raises(ValueError, match="role must be"):
+        cuda_ipc.IpcPipelineTransport(role="banana")
+
+
+@pytest.mark.parametrize("role", ["engine", "trainer"])
+def test_ipc_pipeline_transport_flush_is_safe_before_use(role):
+    """flush() on a fresh transport (no steps run) must be a harmless
+    no-op for both roles — teardown may fire before any transfer."""
+    cuda_ipc.IpcPipelineTransport(role=role).flush()
+
+
+def test_ipc_pipeline_wrong_role_methods_raise():
+    eng = cuda_ipc.IpcPipelineTransport(role="engine")
+    trn = cuda_ipc.IpcPipelineTransport(role="trainer")
+    with pytest.raises(RuntimeError, match="trainer_recv called on an engine-role"):
+        eng.trainer_recv({}, src=0, device=None, group=None)
+    with pytest.raises(RuntimeError, match="engine_send called on a trainer-role"):
+        trn.engine_send({"x": object()}, dst=0, group=None)
