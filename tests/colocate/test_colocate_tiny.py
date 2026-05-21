@@ -79,8 +79,11 @@ pytestmark = [
 
 def _build_train_cmd(num_steps: int, *, seed: int = 42) -> list[str]:
     return [
-        "python", "-m", "torchspec.train_entry",
-        "--config", str(CONFIG_PATH),
+        "python",
+        "-m",
+        "torchspec.train_entry",
+        "--config",
+        str(CONFIG_PATH),
         f"dataset.train_data_path={DATASET_PATH}",
         f"training.num_train_steps={num_steps}",
         "training.num_epochs=1",
@@ -105,15 +108,20 @@ def _make_env(tmp_path: Path) -> dict[str, str]:
     return env
 
 
-def _run_train(cmd: list[str], env: dict[str, str], tmp_path: Path,
-               *, timeout: int) -> tuple[int, str]:
+def _run_train(
+    cmd: list[str], env: dict[str, str], tmp_path: Path, *, timeout: int
+) -> tuple[int, str]:
     """Run train_entry with stdout streamed to a log file; return (rc, log)."""
     log_path = tmp_path / "train_entry.log"
     timed_out = False
     with open(log_path, "wb") as logf:
         proc = subprocess.Popen(
-            cmd, cwd=str(REPO_ROOT), env=env,
-            stdout=logf, stderr=subprocess.STDOUT, text=False,
+            cmd,
+            cwd=str(REPO_ROOT),
+            env=env,
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            text=False,
         )
         try:
             proc.wait(timeout=timeout)
@@ -130,8 +138,7 @@ def _run_train(cmd: list[str], env: dict[str, str], tmp_path: Path,
     print("=== /train_entry tail ===\n")
 
     if timed_out:
-        for log_p in ("/tmp/nvidia-log/control.log",
-                      "/tmp/nvidia-log/server.log"):
+        for log_p in ("/tmp/nvidia-log/control.log", "/tmp/nvidia-log/server.log"):
             p = Path(log_p)
             if p.exists():
                 print(f"\n=== {log_p} (last 4KB) ===")
@@ -139,8 +146,7 @@ def _run_train(cmd: list[str], env: dict[str, str], tmp_path: Path,
                     print(f.read()[-4096:].decode("utf-8", errors="replace"))
                 print(f"=== /{log_p} ===\n")
         raise AssertionError(
-            f"tiny colocate run timed out after {timeout}s; "
-            "see captured output above."
+            f"tiny colocate run timed out after {timeout}s; see captured output above."
         )
     return proc.returncode, log
 
@@ -169,9 +175,7 @@ def test_phase4_tiny_one_step(tmp_path: Path) -> None:
 
 def _losses_from_log(log: str) -> list[tuple[int, float]]:
     out: list[tuple[int, float]] = []
-    pat = re.compile(
-        r"\[colocate_loop\] step=(?P<step>\d+).*?loss=(?P<v>[0-9eE.+\-]+)"
-    )
+    pat = re.compile(r"\[colocate_loop\] step=(?P<step>\d+).*?loss=(?P<v>[0-9eE.+\-]+)")
     for line in log.splitlines():
         m = pat.search(line)
         if m:

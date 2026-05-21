@@ -53,6 +53,8 @@ if not _cuda_ok:
 if _gpu_count < 4:
     pytest.skip(f"requires 4 GPUs, found {_gpu_count}", allow_module_level=True)
 
+from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+
 from torchspec.colocate import is_mps_colocate
 from torchspec.colocate.mps import (
     DEFAULT_PIPE_DIR,
@@ -65,8 +67,6 @@ from torchspec.ray.placement_group import (
     _ensure_ray_initialized,
     create_placement_groups,
 )
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
-
 
 # ---------------------------------------------------------------------------
 # Bare-bones probe actors (kept outside any module-level Ray decorators so
@@ -83,7 +83,6 @@ class _ProbeActor:
     """
 
     def info(self) -> dict:
-        import os
         import socket
 
         gpu_ids = ray.get_gpu_ids()

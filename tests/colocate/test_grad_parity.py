@@ -64,6 +64,7 @@ GRAD_RTOL = float(os.environ.get("GRAD_PARITY_RTOL", "2e-3"))
 # Probes
 # ---------------------------------------------------------------------------
 
+
 def _disagg_runnable() -> bool:
     """True iff the Mooncake store can actually be imported.
 
@@ -76,7 +77,9 @@ def _disagg_runnable() -> bool:
     try:
         proc = subprocess.run(
             ["python3", "-c", probe],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
     except Exception:
         return False
@@ -86,6 +89,7 @@ def _disagg_runnable() -> bool:
 # ---------------------------------------------------------------------------
 # Arm runner
 # ---------------------------------------------------------------------------
+
 
 def _run_arm(
     config_name: str,
@@ -145,8 +149,11 @@ def _run_arm(
         env["TORCHSPEC_DISABLE_MPS"] = "1"
 
     cmd = [
-        "python", "-m", "torchspec.train_entry",
-        "--config", str(config_path),
+        "python",
+        "-m",
+        "torchspec.train_entry",
+        "--config",
+        str(config_path),
         f"dataset.train_data_path={dataset}",
         "training.num_train_steps=1",
         "training.num_epochs=1",
@@ -159,8 +166,12 @@ def _run_arm(
     ]
 
     proc = subprocess.run(
-        cmd, cwd=str(REPO_ROOT), env=env,
-        capture_output=True, text=True, timeout=timeout_s,
+        cmd,
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
     )
     log = proc.stdout + proc.stderr
     print(f"\n=== _run_arm({config_name}) tail ===")
@@ -177,8 +188,7 @@ def _run_arm(
             f"captured tail above."
         )
     assert proc.returncode == 0, (
-        f"train_entry({config_name}, ipc={ipc}) exited {proc.returncode}; "
-        f"see log above."
+        f"train_entry({config_name}, ipc={ipc}) exited {proc.returncode}; see log above."
     )
     return log
 
@@ -200,6 +210,7 @@ def _extract_loss(log: str) -> float:
 # ---------------------------------------------------------------------------
 # Gradient-dump comparison
 # ---------------------------------------------------------------------------
+
 
 def _load_grads(dump_dir: Path) -> dict[str, dict]:
     """Load every gradient dump in a dir, keyed by file name."""
@@ -232,9 +243,7 @@ def _compare_grad_dumps(
     assert grads_b, f"no gradient dumps found in {dir_b}"
 
     common_files = sorted(set(grads_a) & set(grads_b))
-    assert common_files, (
-        f"no dump files in common: {sorted(grads_a)} vs {sorted(grads_b)}"
-    )
+    assert common_files, f"no dump files in common: {sorted(grads_a)} vs {sorted(grads_b)}"
 
     n_compared = 0
     mismatches: list[str] = []
@@ -251,9 +260,7 @@ def _compare_grad_dumps(
         for name in sorted(common_params):
             ta, tb = ga[name].float(), gb[name].float()
             if ta.shape != tb.shape:
-                mismatches.append(
-                    f"{fname}:{name}: shape {tuple(ta.shape)} vs {tuple(tb.shape)}"
-                )
+                mismatches.append(f"{fname}:{name}: shape {tuple(ta.shape)} vs {tuple(tb.shape)}")
                 continue
             n_compared += 1
             if torch.allclose(ta, tb, atol=atol, rtol=rtol, equal_nan=True):
@@ -271,6 +278,7 @@ def _compare_grad_dumps(
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.timeout(2200)
 @pytest.mark.skipif(
@@ -324,19 +332,14 @@ def test_phase7_grad_parity_determinism():
     a non-deterministic kernel, or unseeded RNG — injected noise.
     """
     tmp = Path(tempfile.mkdtemp(prefix="graddet-"))
-    _run_arm("colocate_qwen0p6b_tiny.yaml", dump_dir=tmp / "run_a",
-             visible_devices="0", seed=42)
-    _run_arm("colocate_qwen0p6b_tiny.yaml", dump_dir=tmp / "run_b",
-             visible_devices="0", seed=42)
+    _run_arm("colocate_qwen0p6b_tiny.yaml", dump_dir=tmp / "run_a", visible_devices="0", seed=42)
+    _run_arm("colocate_qwen0p6b_tiny.yaml", dump_dir=tmp / "run_b", visible_devices="0", seed=42)
 
-    n, mismatches = _compare_grad_dumps(
-        tmp / "run_a", tmp / "run_b", atol=0.0, rtol=0.0
-    )
+    n, mismatches = _compare_grad_dumps(tmp / "run_a", tmp / "run_b", atol=0.0, rtol=0.0)
     assert n > 0, "no gradients were compared"
     assert not mismatches, (
         f"colocate path is non-deterministic — {len(mismatches)} of {n} "
-        f"gradients differ across two same-seed runs:\n  "
-        + "\n  ".join(mismatches[:20])
+        f"gradients differ across two same-seed runs:\n  " + "\n  ".join(mismatches[:20])
     )
     print(f"[grad-parity] determinism OK: {n} gradients bit-identical")
 
@@ -376,24 +379,26 @@ def test_phase7_grad_parity_full():
     tmp = Path(tempfile.mkdtemp(prefix="gradfull-"))
 
     # Arm A — gloo CPU-staged transport (the colocate default).
-    _run_arm("colocate_qwen0p6b_tiny.yaml", dump_dir=tmp / "gloo",
-             visible_devices="0", seed=42, ipc=False)
-    # Arm B — CUDA IPC transport.
-    _run_arm("colocate_qwen0p6b_tiny.yaml", dump_dir=tmp / "ipc",
-             visible_devices="0", seed=42, ipc=True)
-
-    n, mismatches = _compare_grad_dumps(
-        tmp / "gloo", tmp / "ipc", atol=GRAD_ATOL, rtol=GRAD_RTOL
+    _run_arm(
+        "colocate_qwen0p6b_tiny.yaml",
+        dump_dir=tmp / "gloo",
+        visible_devices="0",
+        seed=42,
+        ipc=False,
     )
+    # Arm B — CUDA IPC transport.
+    _run_arm(
+        "colocate_qwen0p6b_tiny.yaml", dump_dir=tmp / "ipc", visible_devices="0", seed=42, ipc=True
+    )
+
+    n, mismatches = _compare_grad_dumps(tmp / "gloo", tmp / "ipc", atol=GRAD_ATOL, rtol=GRAD_RTOL)
     assert n > 0, "no gradients were compared"
     assert not mismatches, (
         f"grad parity FAILED — {len(mismatches)} of {n} draft-model "
         f"gradients diverge between the gloo and CUDA IPC transports "
-        f"(atol={GRAD_ATOL}, rtol={GRAD_RTOL}):\n  "
-        + "\n  ".join(mismatches[:20])
+        f"(atol={GRAD_ATOL}, rtol={GRAD_RTOL}):\n  " + "\n  ".join(mismatches[:20])
     )
-    print(f"[grad-parity] full OK: {n} gradients match across "
-          f"gloo + CUDA IPC transports")
+    print(f"[grad-parity] full OK: {n} gradients match across gloo + CUDA IPC transports")
 
 
 @pytest.mark.timeout(90 * 60)
@@ -453,13 +458,24 @@ def test_phase7_grad_parity_vs_disagg():
 
     # Disagg baseline arm — 2 GPUs (trainer + engine disjoint), MPS off.
     # skip_on_failure: the Mooncake transfer engine is environment-fragile.
-    _run_arm("disagg_qwen0p6b_tiny.yaml", dump_dir=tmp / "disagg",
-             visible_devices="0,1", seed=42, ipc=False, disable_mps=True,
-             skip_on_failure=True)
+    _run_arm(
+        "disagg_qwen0p6b_tiny.yaml",
+        dump_dir=tmp / "disagg",
+        visible_devices="0,1",
+        seed=42,
+        ipc=False,
+        disable_mps=True,
+        skip_on_failure=True,
+    )
     # Colocate arm — 1 GPU (trainer + engine MPS-shared), CUDA IPC (the
     # shipped default transport).
-    _run_arm("colocate_qwen0p6b_tiny.yaml", dump_dir=tmp / "colocate",
-             visible_devices="0", seed=42, ipc=True)
+    _run_arm(
+        "colocate_qwen0p6b_tiny.yaml",
+        dump_dir=tmp / "colocate",
+        visible_devices="0",
+        seed=42,
+        ipc=True,
+    )
 
     n, mismatches = _compare_grad_dumps(
         tmp / "disagg", tmp / "colocate", atol=GRAD_ATOL, rtol=GRAD_RTOL
@@ -468,8 +484,6 @@ def test_phase7_grad_parity_vs_disagg():
     assert not mismatches, (
         f"grad parity FAILED — {len(mismatches)} of {n} draft-model "
         f"gradients diverge between disagg and colocate "
-        f"(atol={GRAD_ATOL}, rtol={GRAD_RTOL}):\n  "
-        + "\n  ".join(mismatches[:20])
+        f"(atol={GRAD_ATOL}, rtol={GRAD_RTOL}):\n  " + "\n  ".join(mismatches[:20])
     )
-    print(f"[grad-parity] vs-disagg OK: {n} gradients match the disagg "
-          f"baseline")
+    print(f"[grad-parity] vs-disagg OK: {n} gradients match the disagg baseline")

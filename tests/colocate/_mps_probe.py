@@ -67,8 +67,11 @@ def mps_works_verbose() -> tuple[bool, str]:
         if not os.path.exists(os.path.join(pipe_dir, "control")):
             subprocess.run(
                 ["nvidia-cuda-mps-control", "-d"],
-                env=env, timeout=10,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+                env=env,
+                timeout=10,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
             )
         probe_code = (
             "import ctypes, sys\n"
@@ -81,8 +84,11 @@ def mps_works_verbose() -> tuple[bool, str]:
         )
         proc = subprocess.run(
             ["python3", "-c", probe_code],
-            env=env, timeout=20,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            env=env,
+            timeout=20,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
         )
         if proc.returncode == 0:
             return True, "ok"
@@ -99,9 +105,7 @@ def mps_works_verbose() -> tuple[bool, str]:
                 )
             elif tail.strip():
                 detail = f" (server.log tail: {tail.strip().splitlines()[-1]!r})"
-        return False, (
-            f"cuInit/cuDeviceGetCount returned rc={proc.returncode}{detail}"
-        )
+        return False, (f"cuInit/cuDeviceGetCount returned rc={proc.returncode}{detail}")
     except Exception as e:
         return False, f"unexpected exception during MPS probe: {e!r}"
 

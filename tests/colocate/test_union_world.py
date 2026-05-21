@@ -57,7 +57,6 @@ from torchspec.colocate.world import (
     UnionWorldSpec,
 )
 
-
 N_PER_ROLE = 4
 
 
@@ -86,6 +85,7 @@ class _UnionWorldProbe:
 
     def node_ip(self) -> str:
         import ray as _ray
+
         return _ray.util.get_node_ip_address()
 
     def run(self, spec: UnionWorldSpec) -> dict:

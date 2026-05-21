@@ -47,8 +47,12 @@ def test_sorted_tensor_names_alphabetic():
         sorted_tensor_names,
     )
 
-    a = sorted_tensor_names({"target_logits": None, "hidden_states": None, "aux_hidden_states": None})
-    b = sorted_tensor_names({"hidden_states": None, "aux_hidden_states": None, "target_logits": None})
+    a = sorted_tensor_names(
+        {"target_logits": None, "hidden_states": None, "aux_hidden_states": None}
+    )
+    b = sorted_tensor_names(
+        {"hidden_states": None, "aux_hidden_states": None, "target_logits": None}
+    )
     assert a == b == ["aux_hidden_states", "hidden_states", "target_logits"]
 
 
@@ -187,9 +191,7 @@ def test_multi_tensor_fetcher_rejects_cpu_device():
         pytest.skip("torch.distributed already initialised; can't construct without CUDA check")
 
     with pytest.raises(RuntimeError):
-        NcclMultiTensorFetcher(
-            src_global_rank=0, device=torch.device("cpu")
-        )
+        NcclMultiTensorFetcher(src_global_rank=0, device=torch.device("cpu"))
 
 
 # ----------------------------------------------------------------------

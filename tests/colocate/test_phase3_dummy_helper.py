@@ -16,7 +16,12 @@ torch = pytest.importorskip("torch")
 
 # conftest stubs torch with MagicMock on Mac dev boxes; skip cleanly.
 try:
-    _has_real_torch = bool(torch.cuda.is_available()) or hasattr(torch, "arange") and callable(torch.arange) and not str(type(torch)).startswith("<class 'unittest.mock")
+    _has_real_torch = (
+        bool(torch.cuda.is_available())
+        or hasattr(torch, "arange")
+        and callable(torch.arange)
+        and not str(type(torch)).startswith("<class 'unittest.mock")
+    )
 except Exception:
     _has_real_torch = False
 

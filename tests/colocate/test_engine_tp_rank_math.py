@@ -55,8 +55,12 @@ def _env(paired_trainer_rank: int, n_per_role: int, engine_tp_size: int):
 
 def test_engine_tp_size_field_defaults_to_one():
     e = tsc.ColocateEnv(
-        paired_trainer_rank=0, master_addr="x", master_port=1,
-        world_size=2, n_per_role=1, timeout_minutes=30,
+        paired_trainer_rank=0,
+        master_addr="x",
+        master_port=1,
+        world_size=2,
+        n_per_role=1,
+        timeout_minutes=30,
     )
     assert e.engine_tp_size == 1
 
@@ -71,8 +75,8 @@ def test_tp1_backward_compatible():
 @pytest.mark.parametrize(
     "engine_index,n_per_role,tp,expected",
     [
-        (0, 4, 2, [4, 5]),   # engine 0, base 0 -> [N+0, N+1]
-        (1, 4, 2, [6, 7]),   # engine 1, base 2 -> [N+2, N+3]
+        (0, 4, 2, [4, 5]),  # engine 0, base 0 -> [N+0, N+1]
+        (1, 4, 2, [6, 7]),  # engine 1, base 2 -> [N+2, N+3]
         (0, 8, 4, [8, 9, 10, 11]),
         (1, 8, 4, [12, 13, 14, 15]),
     ],

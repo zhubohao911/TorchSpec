@@ -115,11 +115,16 @@ def test_phase6_peak_alloc_flatness():
 
     proc = subprocess.run(
         [
-            "bash", str(run_sh), str(config_path),
+            "bash",
+            str(run_sh),
+            str(config_path),
             f"training.num_train_steps={NUM_STEPS}",
             "training.num_epochs=1",
         ],
-        cwd=str(REPO_ROOT), env=env, capture_output=True, text=True,
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
         timeout=_TIMEOUT_S - 30,
     )
 
@@ -129,9 +134,7 @@ def test_phase6_peak_alloc_flatness():
         print(line)
     print("=== /last 200 lines ===\n")
 
-    assert proc.returncode == 0, (
-        f"colocate stability run exited {proc.returncode}; see log above."
-    )
+    assert proc.returncode == 0, f"colocate stability run exited {proc.returncode}; see log above."
 
     peaks = _extract_peak_alloc(log)
     early = next((peaks[s] for s in sorted(peaks) if s >= WARMUP_STEPS), None)

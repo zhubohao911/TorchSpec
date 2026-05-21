@@ -20,7 +20,6 @@ import pytest
 
 from torchspec.colocate import mps as mps_mod
 
-
 # ---------------------------------------------------------------------------
 # mps_client_env
 # ---------------------------------------------------------------------------
@@ -281,7 +280,8 @@ def test_setup_for_colocate_falls_back_when_probe_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(mps_mod, "is_mps_available", lambda: True)
     monkeypatch.setattr(mps_mod, "is_mps_running", lambda pipe_dir=None: True)
     monkeypatch.setattr(
-        mps_mod, "_probe_mps_server_works",
+        mps_mod,
+        "_probe_mps_server_works",
         lambda pipe_dir, log_dir, **kw: (False, "operation not supported"),
     )
 

@@ -36,9 +36,7 @@ from tests.colocate._mps_probe import has_n_gpus, mps_works
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 pytestmark = [
-    pytest.mark.skipif(
-        not has_n_gpus(1), reason="colocate checkpoint test needs >=1 GPU."
-    ),
+    pytest.mark.skipif(not has_n_gpus(1), reason="colocate checkpoint test needs >=1 GPU."),
     pytest.mark.skipif(
         not mps_works(), reason="colocate checkpoint test needs working NVIDIA MPS."
     ),
@@ -46,7 +44,10 @@ pytestmark = [
 
 
 def _run_colocate(
-    *, output_dir: Path, num_steps: int, extra_args: list[str],
+    *,
+    output_dir: Path,
+    num_steps: int,
+    extra_args: list[str],
     timeout_s: int = 1800,
 ) -> str:
     """Run the colocate tiny config through train_entry; return the log."""
@@ -59,8 +60,11 @@ def _run_colocate(
     env["CUDA_VISIBLE_DEVICES"] = "0"
 
     cmd = [
-        "python", "-m", "torchspec.train_entry",
-        "--config", str(config_path),
+        "python",
+        "-m",
+        "torchspec.train_entry",
+        "--config",
+        str(config_path),
         f"dataset.train_data_path={dataset}",
         f"training.num_train_steps={num_steps}",
         "training.num_epochs=1",
@@ -68,17 +72,19 @@ def _run_colocate(
         *extra_args,
     ]
     proc = subprocess.run(
-        cmd, cwd=str(REPO_ROOT), env=env,
-        capture_output=True, text=True, timeout=timeout_s,
+        cmd,
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
     )
     log = proc.stdout + proc.stderr
     print("\n=== _run_colocate tail ===")
     for line in log.splitlines()[-80:]:
         print(line)
     print("=== /_run_colocate tail ===\n")
-    assert proc.returncode == 0, (
-        f"train_entry exited {proc.returncode}; see log above."
-    )
+    assert proc.returncode == 0, f"train_entry exited {proc.returncode}; see log above."
     return log
 
 

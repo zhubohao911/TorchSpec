@@ -102,8 +102,11 @@ def test_phase4_one_step_completes_end_to_end(tmp_path: Path):
     env.setdefault("NCCL_DEBUG", "WARN")
 
     cmd = [
-        "python", "-m", "torchspec.train_entry",
-        "--config", str(config_path),
+        "python",
+        "-m",
+        "torchspec.train_entry",
+        "--config",
+        str(config_path),
         f"dataset.train_data_path={dataset_path}",
         "training.num_train_steps=1",
         "training.num_epochs=1",
@@ -184,8 +187,7 @@ def test_phase4_one_step_completes_end_to_end(tmp_path: Path):
         f"Expected log line containing {completed_marker!r} not found. "
         f"This means the colocate loop didn't reach the end of step 1 — "
         f"the rendezvous succeeded but the forward/backward/recv chain "
-        f"failed silently. Last 50 lines:\n"
-        + "\n".join(tail[-50:])
+        f"failed silently. Last 50 lines:\n" + "\n".join(tail[-50:])
     )
 
     # Output dir cleanup is the responsibility of pytest's tmp_path teardown.

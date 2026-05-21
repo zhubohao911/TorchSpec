@@ -93,12 +93,12 @@ def test_colocate_setup_function_signature_matches_async():
     """``setup_colocate_training_with_engines`` and the async sibling
     must have the same call surface for ``train_entry`` branching to be
     a clean swap."""
+    import inspect
+
     from torchspec.controller.setup import (
         setup_async_training_with_engines,
         setup_colocate_training_with_engines,
     )
-
-    import inspect
 
     async_sig = inspect.signature(setup_async_training_with_engines)
     colocate_sig = inspect.signature(setup_colocate_training_with_engines)
@@ -121,8 +121,9 @@ def test_colocate_setup_returns_none_inference_manager():
     actors — we just call the function with a stub controller and
     train_group that report what they're called with.
     """
-    from torchspec.controller.setup import setup_colocate_training_with_engines
     from unittest.mock import MagicMock
+
+    from torchspec.controller.setup import setup_colocate_training_with_engines
 
     # Stub args namespace
     class _Args:
@@ -145,7 +146,10 @@ def test_colocate_setup_returns_none_inference_manager():
     try:
         ray.get = lambda x: x  # passthrough for test
         result_controller, manager = setup_colocate_training_with_engines(
-            _Args(), train_group, inference_engines=[1, 2], controller=controller,
+            _Args(),
+            train_group,
+            inference_engines=[1, 2],
+            controller=controller,
         )
     finally:
         ray.get = real_ray_get

@@ -93,6 +93,7 @@ class _BareProbe:
 
     def node_ip(self) -> str:
         import ray as _ray
+
         return _ray.util.get_node_ip_address()
 
     def run(
@@ -104,6 +105,7 @@ class _BareProbe:
     ) -> dict:
         import os
         import traceback
+
         import torch
         import torch.distributed as dist
 
@@ -127,7 +129,9 @@ class _BareProbe:
             for step in range(n_iters):
                 if self.my_rank == 1:  # engine: send
                     t = make_dummy_tensor(
-                        shape, dtype=torch.bfloat16, device=torch.device("cuda", 0),
+                        shape,
+                        dtype=torch.bfloat16,
+                        device=torch.device("cuda", 0),
                         seed=step,
                     )
                     op = dist.P2POp(dist.isend, t, peer=peer)
@@ -138,8 +142,10 @@ class _BareProbe:
                     w.wait()
                 if self.my_rank == 0:
                     expected = make_dummy_tensor(
-                        shape, dtype=torch.bfloat16,
-                        device=torch.device("cuda", 0), seed=step,
+                        shape,
+                        dtype=torch.bfloat16,
+                        device=torch.device("cuda", 0),
+                        seed=step,
                     )
                     if not torch.equal(buf, expected):
                         mismatches += 1
@@ -148,9 +154,7 @@ class _BareProbe:
                                 {
                                     "step": step,
                                     "got_first": float(buf.flatten()[0].item()),
-                                    "expected_first": float(
-                                        expected.flatten()[0].item()
-                                    ),
+                                    "expected_first": float(expected.flatten()[0].item()),
                                 }
                             )
 
@@ -239,17 +243,23 @@ def test_p2p_dummy_with_union_world_1iter():
 
         def node_ip(self) -> str:
             import ray as _ray
+
             return _ray.util.get_node_ip_address()
 
         def run(self, master_addr: str, master_port: int) -> dict:
             import traceback
+
             import torch
 
             from torchspec.colocate.world import (
-                ROLE_TRAINER, UnionWorldSpec, init_union_world,
+                ROLE_TRAINER,
+                UnionWorldSpec,
+                init_union_world,
             )
             from torchspec.training.nccl_data_fetcher import (
-                NcclDataFetcher, make_dummy_tensor, send_dummy,
+                NcclDataFetcher,
+                make_dummy_tensor,
+                send_dummy,
             )
 
             out = {"role": self.role, "role_rank": self.role_rank}
@@ -274,15 +284,19 @@ def test_p2p_dummy_with_union_world_1iter():
                     )
                     got = fetcher.recv()
                     expected = make_dummy_tensor(
-                        shape, dtype=torch.bfloat16,
-                        device=torch.device("cuda", 0), seed=0,
+                        shape,
+                        dtype=torch.bfloat16,
+                        device=torch.device("cuda", 0),
+                        seed=0,
                     )
                     out["bytes_match"] = bool(torch.equal(got, expected))
                 else:
                     send_dummy(
-                        shape, dtype=torch.bfloat16,
+                        shape,
+                        dtype=torch.bfloat16,
                         device=torch.device("cuda", 0),
-                        dst_rank=uw.paired_global_rank, seed=0,
+                        dst_rank=uw.paired_global_rank,
+                        seed=0,
                     )
                 out["ok"] = True
             except Exception as e:
@@ -308,13 +322,10 @@ def test_p2p_dummy_with_union_world_1iter():
 
     err = [r for r in rs if "error" in r]
     assert not err, "Some ranks errored:\n" + "\n".join(
-        f"  {r['role']}/{r['role_rank']}: {r['error']}\n{r.get('traceback', '')}"
-        for r in err
+        f"  {r['role']}/{r['role_rank']}: {r['error']}\n{r.get('traceback', '')}" for r in err
     )
     trainer = next(r for r in rs if r["role"] == "training")
-    assert trainer["bytes_match"], (
-        "init_union_world round-trip got wrong bytes: " + str(trainer)
-    )
+    assert trainer["bytes_match"], "init_union_world round-trip got wrong bytes: " + str(trainer)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +366,7 @@ def test_p2p_dummy_shape_mismatch_errors_cleanly():
 
         def node_ip(self) -> str:
             import ray as _ray
+
             return _ray.util.get_node_ip_address()
 
         def run(
@@ -367,6 +379,7 @@ def test_p2p_dummy_shape_mismatch_errors_cleanly():
             import datetime
             import os
             import traceback
+
             import torch
             import torch.distributed as dist
 
@@ -389,14 +402,10 @@ def test_p2p_dummy_shape_mismatch_errors_cleanly():
                 peer = 1 - self.my_rank
                 try:
                     if self.my_rank == 0:
-                        buf = torch.empty(
-                            recv_shape, dtype=torch.bfloat16, device="cuda"
-                        )
+                        buf = torch.empty(recv_shape, dtype=torch.bfloat16, device="cuda")
                         op = dist.P2POp(dist.irecv, buf, peer=peer)
                     else:
-                        t = torch.zeros(
-                            send_shape, dtype=torch.bfloat16, device="cuda"
-                        )
+                        t = torch.zeros(send_shape, dtype=torch.bfloat16, device="cuda")
                         op = dist.P2POp(dist.isend, t, peer=peer)
                     works = dist.batch_isend_irecv([op])
                     for w in works:
@@ -446,6 +455,5 @@ def test_p2p_dummy_shape_mismatch_errors_cleanly():
     any_caught = any(r.get("caught_error") for r in rs)
     silent_passes = [r for r in rs if r.get("caught_error") is False]
     assert any_caught or not silent_passes, (
-        "shape-mismatch should error on at least one side; got\n"
-        + "\n".join(f"  {r}" for r in rs)
+        "shape-mismatch should error on at least one side; got\n" + "\n".join(f"  {r}" for r in rs)
     )

@@ -39,9 +39,7 @@ pytestmark = [
         not has_n_gpus(2),
         reason="multi-engine TP test needs >=2 GPUs (engine_tp_size=2).",
     ),
-    pytest.mark.skipif(
-        not mps_works(), reason="multi-engine TP test needs working NVIDIA MPS."
-    ),
+    pytest.mark.skipif(not mps_works(), reason="multi-engine TP test needs working NVIDIA MPS."),
 ]
 
 _NUM_STEPS = 5
@@ -73,15 +71,21 @@ def test_colocate_engine_tp2_end_to_end():
 
     proc = subprocess.run(
         [
-            "python", "-m", "torchspec.train_entry",
-            "--config", str(config_path),
+            "python",
+            "-m",
+            "torchspec.train_entry",
+            "--config",
+            str(config_path),
             f"dataset.train_data_path={dataset}",
             f"training.num_train_steps={_NUM_STEPS}",
             "training.num_epochs=1",
             f"output_dir={out_dir}",
         ],
-        cwd=str(REPO_ROOT), env=env,
-        capture_output=True, text=True, timeout=45 * 60,
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=45 * 60,
     )
     log = proc.stdout + proc.stderr
     print("\n=== colocate-tp2 run tail ===")
@@ -98,17 +102,13 @@ def test_colocate_engine_tp2_end_to_end():
     )
 
     losses = _losses(log)
-    assert len(losses) >= _NUM_STEPS, (
-        f"expected >={_NUM_STEPS} loss points, got {losses}"
-    )
+    assert len(losses) >= _NUM_STEPS, f"expected >={_NUM_STEPS} loss points, got {losses}"
     for i, v in enumerate(losses):
         assert v == v and 0.0 < abs(v) < 1e6, (
             f"colocate tp2 loss at step {i + 1} is suspect: {v!r} "
             f"(a TP rank may be sending/receiving the wrong batch item)."
         )
     assert losses[-1] < losses[0], (
-        f"colocate tp2 loss did not decrease ({losses[0]:.3f} -> "
-        f"{losses[-1]:.3f})."
+        f"colocate tp2 loss did not decrease ({losses[0]:.3f} -> {losses[-1]:.3f})."
     )
-    print(f"[colocate-tp2] OK: {len(losses)} steps, loss "
-          f"{losses[0]:.3f} -> {losses[-1]:.3f}")
+    print(f"[colocate-tp2] OK: {len(losses)} steps, loss {losses[0]:.3f} -> {losses[-1]:.3f}")

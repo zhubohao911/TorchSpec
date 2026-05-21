@@ -65,9 +65,7 @@ pytestmark = [
 
 def _losses_from_log(log: str) -> list[tuple[int, float]]:
     out: list[tuple[int, float]] = []
-    pat = re.compile(
-        r"\[colocate_loop\] step=(?P<step>\d+).*?loss=(?P<v>[0-9eE.+\-]+)"
-    )
+    pat = re.compile(r"\[colocate_loop\] step=(?P<step>\d+).*?loss=(?P<v>[0-9eE.+\-]+)")
     for line in log.splitlines():
         m = pat.search(line)
         if m:
@@ -106,8 +104,11 @@ def test_phase7_convergence_loss_decreases():
 
     proc = subprocess.run(
         [
-            "python", "-m", "torchspec.train_entry",
-            "--config", str(config_path),
+            "python",
+            "-m",
+            "torchspec.train_entry",
+            "--config",
+            str(config_path),
             f"dataset.train_data_path={dataset}",
             f"training.num_train_steps={NUM_STEPS}",
             "training.num_epochs=1",
@@ -117,7 +118,10 @@ def test_phase7_convergence_loss_decreases():
             "inference.inference_num_gpus_per_node=4",
             "inference.sglang.tp_size=1",
         ],
-        cwd=str(REPO_ROOT), env=env, capture_output=True, text=True,
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
         timeout=60 * 60 - 30,
     )
 
@@ -135,7 +139,7 @@ def test_phase7_convergence_loss_decreases():
         f"may have changed format."
     )
     early = sum(v for _, v in losses[: max(1, len(losses) // 4)])
-    late = sum(v for _, v in losses[-max(1, len(losses) // 4):])
+    late = sum(v for _, v in losses[-max(1, len(losses) // 4) :])
     early /= max(1, len(losses) // 4)
     late /= max(1, len(losses) // 4)
     assert late < early, (
@@ -156,9 +160,7 @@ def _loss_curve_from_log(log: str) -> dict[int, float]:
     ``TORCHSPEC_LOSS_CURVE_LOG`` is set, so the two arms are directly
     comparable."""
     out: dict[int, float] = {}
-    pat = re.compile(
-        r"\[loss_curve\] step=(?P<step>\d+) loss=(?P<v>[0-9eE.+\-]+)"
-    )
+    pat = re.compile(r"\[loss_curve\] step=(?P<step>\d+) loss=(?P<v>[0-9eE.+\-]+)")
     for line in log.splitlines():
         m = pat.search(line)
         if m:
@@ -207,8 +209,11 @@ def _run_loss_curve_arm(
         env["TORCHSPEC_DISABLE_MPS"] = "1"
 
     cmd = [
-        "python", "-m", "torchspec.train_entry",
-        "--config", str(config_path),
+        "python",
+        "-m",
+        "torchspec.train_entry",
+        "--config",
+        str(config_path),
         f"dataset.train_data_path={dataset}",
         f"training.num_train_steps={num_steps}",
         # High epoch cap so num_train_steps is the only stopping limit
@@ -220,8 +225,12 @@ def _run_loss_curve_arm(
     ]
 
     proc = subprocess.run(
-        cmd, cwd=str(REPO_ROOT), env=env,
-        capture_output=True, text=True, timeout=timeout_s,
+        cmd,
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
     )
     log = proc.stdout + proc.stderr
     print(f"\n=== _run_loss_curve_arm({config_name}) tail ===")
@@ -306,14 +315,19 @@ def test_convergence_disagg_overlap():
     # Disagg baseline arm — 2 GPUs (trainer + engine disjoint), MPS off.
     disagg = _run_loss_curve_arm(
         "disagg_qwen0p6b_tiny.yaml",
-        num_steps=NUM_STEPS, visible_devices="0,1",
-        disable_mps=True, skip_on_failure=True, timeout_s=arm_timeout,
+        num_steps=NUM_STEPS,
+        visible_devices="0,1",
+        disable_mps=True,
+        skip_on_failure=True,
+        timeout_s=arm_timeout,
     )
     # Colocate arm — 1 GPU (trainer + engine MPS-shared), CUDA IPC.
     colocate = _run_loss_curve_arm(
         "colocate_qwen0p6b_tiny.yaml",
-        num_steps=NUM_STEPS, visible_devices="0",
-        ipc=True, timeout_s=arm_timeout,
+        num_steps=NUM_STEPS,
+        visible_devices="0",
+        ipc=True,
+        timeout_s=arm_timeout,
     )
 
     common = sorted(set(disagg) & set(colocate))
@@ -340,23 +354,27 @@ def test_convergence_disagg_overlap():
         c, d = colocate[s], disagg[s]
         rd = abs(c - d) / max(abs(d), 1e-6) * 100
         print(f"{s:>6} {c:>12.6f} {d:>12.6f} {rd:>10.3f}")
-    print(f"mean rel.dev = {mean_dev*100:.3f}%   "
-          f"max rel.dev = {max_dev*100:.3f}% (step {worst})   "
-          f"tol = {TOL_PCT:.2f}%")
+    print(
+        f"mean rel.dev = {mean_dev * 100:.3f}%   "
+        f"max rel.dev = {max_dev * 100:.3f}% (step {worst})   "
+        f"tol = {TOL_PCT:.2f}%"
+    )
     print("=== /colocate vs disagg loss curve ===\n")
 
     tol = TOL_PCT / 100.0
     assert mean_dev <= tol, (
         f"colocate and disagg loss curves do not overlap: mean relative "
-        f"deviation {mean_dev*100:.3f}% exceeds the {TOL_PCT:.2f}% "
+        f"deviation {mean_dev * 100:.3f}% exceeds the {TOL_PCT:.2f}% "
         f"tolerance over {n} steps. The colocate transport is not "
         f"converging like the disaggregated baseline."
     )
     assert max_dev <= 3 * tol, (
         f"colocate vs disagg loss diverges at step {worst}: relative "
-        f"deviation {max_dev*100:.3f}% exceeds the {3*TOL_PCT:.2f}% "
-        f"per-step ceiling (mean was {mean_dev*100:.3f}%). A single-step "
+        f"deviation {max_dev * 100:.3f}% exceeds the {3 * TOL_PCT:.2f}% "
+        f"per-step ceiling (mean was {mean_dev * 100:.3f}%). A single-step "
         f"spike this large points at a transport glitch, not slow drift."
     )
-    print(f"[convergence] disagg-overlap OK: mean {mean_dev*100:.3f}%, "
-          f"max {max_dev*100:.3f}% over {n} steps")
+    print(
+        f"[convergence] disagg-overlap OK: mean {mean_dev * 100:.3f}%, "
+        f"max {max_dev * 100:.3f}% over {n} steps"
+    )

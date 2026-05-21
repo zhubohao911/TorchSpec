@@ -23,8 +23,7 @@ _ENV = "TORCHSPEC_GRAD_PARITY"
 @pytest.fixture(autouse=True)
 def _clean_env():
     """Snapshot and restore the env vars these tests poke."""
-    saved = {k: os.environ.get(k) for k in (_ENV, "PYTHONHASHSEED",
-                                            "CUBLAS_WORKSPACE_CONFIG")}
+    saved = {k: os.environ.get(k) for k in (_ENV, "PYTHONHASHSEED", "CUBLAS_WORKSPACE_CONFIG")}
     yield
     for k, v in saved.items():
         if v is None:
@@ -36,8 +35,14 @@ def _clean_env():
 @pytest.mark.parametrize(
     "value,expected",
     [
-        ("1", True), ("true", True), ("TRUE", True), ("yes", True),
-        ("0", False), ("false", False), ("", False), ("nope", False),
+        ("1", True),
+        ("true", True),
+        ("TRUE", True),
+        ("yes", True),
+        ("0", False),
+        ("false", False),
+        ("", False),
+        ("nope", False),
     ],
 )
 def test_is_grad_parity_mode_env_toggle(value, expected):

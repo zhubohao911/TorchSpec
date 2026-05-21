@@ -56,7 +56,10 @@ def _make_dummy_dict(specs, seed: int = 0) -> dict:
     for i, name in enumerate(sorted(specs.keys())):
         shape, dtype = specs[name]
         out[name] = make_dummy_tensor(
-            shape, dtype=dtype, device=torch.device("cuda", 0), seed=seed + i,
+            shape,
+            dtype=dtype,
+            device=torch.device("cuda", 0),
+            seed=seed + i,
         )
     return out
 
@@ -82,20 +85,25 @@ def test_p2p_multi_tensor_round_trip():
 
         def node_ip(self) -> str:
             import ray as _ray
+
             return _ray.util.get_node_ip_address()
 
         def run(self, master_addr: str, master_port: int) -> dict:
             import traceback
+
             import torch
 
             from torchspec.colocate.world import (
-                ROLE_TRAINER, UnionWorldSpec, init_union_world,
+                ROLE_TRAINER,
+                UnionWorldSpec,
+                init_union_world,
             )
             from torchspec.inference.engine.nccl_hidden_states_connector import (
                 NcclHiddenStatesConnector,
             )
             from torchspec.training.nccl_data_fetcher import (
-                NcclMultiTensorFetcher, make_dummy_tensor,
+                NcclMultiTensorFetcher,
+                make_dummy_tensor,
             )
 
             out = {"role": self.role}
@@ -128,8 +136,10 @@ def test_p2p_multi_tensor_round_trip():
                     for i, name in enumerate(sorted(specs.keys())):
                         shape, dtype = specs[name]
                         expected = make_dummy_tensor(
-                            shape, dtype=dtype,
-                            device=torch.device("cuda", 0), seed=i,
+                            shape,
+                            dtype=dtype,
+                            device=torch.device("cuda", 0),
+                            seed=i,
                         )
                         if not torch.equal(got[name], expected):
                             mismatches[name] = {
@@ -143,8 +153,10 @@ def test_p2p_multi_tensor_round_trip():
                     for i, name in enumerate(sorted(specs.keys())):
                         shape, dtype = specs[name]
                         tensors[name] = make_dummy_tensor(
-                            shape, dtype=dtype,
-                            device=torch.device("cuda", 0), seed=i,
+                            shape,
+                            dtype=dtype,
+                            device=torch.device("cuda", 0),
+                            seed=i,
                         )
                     conn = NcclHiddenStatesConnector(
                         dst_global_rank=uw.paired_global_rank,
@@ -181,12 +193,9 @@ def test_p2p_multi_tensor_round_trip():
     assert trainer["received_keys"] == expected_keys, trainer
     assert engine["sent_keys"] == expected_keys, engine
 
-    assert trainer["mismatches"] == {}, (
-        "multi-tensor round-trip got byte mismatches: "
-        + ", ".join(
-            f"{name}: got_first={info['got_first']} != expected_first={info['expected_first']}"
-            for name, info in trainer["mismatches"].items()
-        )
+    assert trainer["mismatches"] == {}, "multi-tensor round-trip got byte mismatches: " + ", ".join(
+        f"{name}: got_first={info['got_first']} != expected_first={info['expected_first']}"
+        for name, info in trainer["mismatches"].items()
     )
 
 
@@ -213,16 +222,20 @@ def test_send_step_helper_matches_connector():
 
         def node_ip(self) -> str:
             import ray as _ray
+
             return _ray.util.get_node_ip_address()
 
         def run(self, master_addr: str, master_port: int) -> dict:
             import os
             import traceback
+
             import torch
             import torch.distributed as dist
 
             from torchspec.training.nccl_data_fetcher import (
-                NcclMultiTensorFetcher, make_dummy_tensor, send_step,
+                NcclMultiTensorFetcher,
+                make_dummy_tensor,
+                send_step,
             )
 
             out = {"rank": self.my_rank}
@@ -252,8 +265,10 @@ def test_send_step_helper_matches_connector():
                     for i, name in enumerate(sorted(specs.keys())):
                         shape, dtype = specs[name]
                         expected = make_dummy_tensor(
-                            shape, dtype=dtype,
-                            device=torch.device("cuda", 0), seed=i,
+                            shape,
+                            dtype=dtype,
+                            device=torch.device("cuda", 0),
+                            seed=i,
                         )
                         if not torch.equal(got[name], expected):
                             out.setdefault("mismatches", []).append(name)
@@ -262,8 +277,10 @@ def test_send_step_helper_matches_connector():
                     for i, name in enumerate(sorted(specs.keys())):
                         shape, dtype = specs[name]
                         tensors[name] = make_dummy_tensor(
-                            shape, dtype=dtype,
-                            device=torch.device("cuda", 0), seed=i,
+                            shape,
+                            dtype=dtype,
+                            device=torch.device("cuda", 0),
+                            seed=i,
                         )
                     send_step(tensors, dst_global_rank=peer)
 

@@ -22,8 +22,7 @@ from torchspec.colocate import cuda_ipc
 @pytest.fixture(autouse=True)
 def _clean():
     saved = {
-        k: os.environ.get(k)
-        for k in ("TORCHSPEC_COLOCATE_IPC", "TORCHSPEC_COLOCATE_IPC_PIPELINE")
+        k: os.environ.get(k) for k in ("TORCHSPEC_COLOCATE_IPC", "TORCHSPEC_COLOCATE_IPC_PIPELINE")
     }
     cuda_ipc._reset_probe_cache_for_test()
     yield
@@ -40,9 +39,15 @@ def _clean():
     [
         # Default-on: any value that is not an explicit disable token
         # (including an empty string and unrecognised junk) enables IPC.
-        ("1", True), ("true", True), ("YES", True),
-        ("garbage", True), ("", True),
-        ("0", False), ("false", False), ("no", False), ("OFF", False),
+        ("1", True),
+        ("true", True),
+        ("YES", True),
+        ("garbage", True),
+        ("", True),
+        ("0", False),
+        ("false", False),
+        ("no", False),
+        ("OFF", False),
     ],
 )
 def test_ipc_enabled_env_toggle(value, expected):
@@ -57,7 +62,8 @@ def test_ipc_enabled_unset_defaults_on():
 
 def test_ensure_ipc_usable_raises_when_probe_fails(monkeypatch):
     monkeypatch.setattr(
-        cuda_ipc, "probe_ipc_capability",
+        cuda_ipc,
+        "probe_ipc_capability",
         lambda: (False, "expandable_segments active"),
     )
     with pytest.raises(RuntimeError, match="expandable_segments active"):
@@ -84,10 +90,16 @@ def test_probe_cache_reset_hook():
     "value,expected",
     [
         # Opt-in: only an explicit enable token turns the pipeline on.
-        ("1", True), ("true", True), ("YES", True), ("on", True),
+        ("1", True),
+        ("true", True),
+        ("YES", True),
+        ("on", True),
         (" On ", True),
         # Anything else — including unset, empty, junk — leaves it off.
-        ("0", False), ("false", False), ("garbage", False), ("", False),
+        ("0", False),
+        ("false", False),
+        ("garbage", False),
+        ("", False),
     ],
 )
 def test_ipc_pipeline_enabled_env_toggle(value, expected):
