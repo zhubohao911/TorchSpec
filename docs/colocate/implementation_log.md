@@ -2149,3 +2149,60 @@ patch is the maintained source, so every change to it (e.g. `6e74ffc`'s
 become independent only by retiring one — once v0.5.10 passes full
 validation and nothing else pins v0.5.8 (Modal smoke, `docker/sglang/`),
 v0.5.10 should become the sole maintained patch.
+
+---
+
+## Transport: CUDA IPC made the default + gloo-vs-IPC benchmark (2026-05-21)
+
+The colocate hidden-state transport was flipped: **CUDA IPC is now the
+default**, with the gloo CPU-staged path as an explicit opt-out. Driven
+by a head-to-head benchmark on real hardware.
+
+### The change
+
+`TORCHSPEC_COLOCATE_IPC` went from opt-in (`=1`) to opt-out: unset — or
+any value other than a disable token — selects CUDA IPC; `0` / `false` /
+`no` / `off` falls back to the gloo CPU-staged transport. The env helper
+`cuda_ipc.ipc_requested()` was renamed `ipc_enabled()` and its default
+inverted; `inference/factory.py` and `ray/train_group.py` now skip the
+`expandable_segments` allocator config by default (CUDA IPC needs plain
+`cudaMalloc` memory — only the gloo fallback injects it). 10 files:
+`cuda_ipc.py`, the connector + fetcher, factory, train_group, train_entry,
+plus `test_cuda_ipc.py` / `test_grad_parity.py` (its gloo arm now forces
+`=0`) / `test_colocate_ipc.py` docstring and `usage.md`. Both engine and
+trainer read the same env var, so they always agree on the transport;
+when it is unset both default to IPC independently, so nothing needs
+propagating. `test_cuda_ipc.py` is 13/13 on the Mac dev box.
+
+### The benchmark (`scripts/colocate/bench_transport.py`)
+
+A new self-contained benchmark spawns two processes on one GPU (the
+colocate topology), forms a 2-rank gloo group, and times both transports
+across a payload sweep + a realistic Eagle3 multi-tensor case. It loads
+`cuda_ipc.py` by file path, so it runs on a bare torch install with no
+`pip install`.
+
+**GPU-measured 2026-05-21 (RunPod 1×H100 80GB SXM, torch 2.4.1):**
+
+| Payload | gloo | CUDA IPC | speedup |
+|---|--:|--:|--:|
+| 4 MB | 2.94 ms | 1.12 ms | 2.6× |
+| 16 MB | 14.98 ms | 1.53 ms | 9.8× |
+| 64 MB | 154 ms | 0.77 ms | 200× |
+| 256 MB | 497 ms | 0.82 ms | 605× |
+| Eagle3 160 MB (realistic) | 319 ms | 1.9 ms | **171×** |
+
+gloo is bottlenecked at ~0.5 GB/s by its own TCP `dist.send`/`recv` ship
+(not PCIe); CUDA IPC is near-constant ~1 ms (the D->D copy is 0.26 ms for
+256 MB — the rest is the fixed `cudaIpcOpenMemHandle` + ack handshake).
+Crossover is ~3-4 MB: below it IPC's fixed cost makes it marginally
+slower, but colocate hidden states are hundreds of MB. Full tables +
+per-stage breakdown + caveats in `docs/colocate/transport_benchmark.md`.
+
+### Still pending
+
+The `--full` suite (`run_smoke_host.sh --full`, 4×H100) has not yet been
+re-run with IPC as the default. The phase4/6/7 tests now exercise the IPC
+path (including 200-step alloc-flatness and 50-step convergence, with
+`expandable_segments` off). The benchmark settles the *performance*
+question; that run settles the *stability* question.
