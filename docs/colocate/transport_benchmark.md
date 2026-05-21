@@ -3,6 +3,16 @@
 Measured **2026-05-21** on a RunPod **1×H100 80GB HBM3** (SXM), torch
 2.4.1 + CUDA 12.4, with [`scripts/colocate/bench_transport.py`](../../scripts/colocate/bench_transport.py).
 
+> **See also:** [`transport_optimization.md`](transport_optimization.md) —
+> whether to hand-write a C++/CUDA or Triton kernel for this transport
+> (no — the only kernel in the path is a bandwidth-saturated D→D copy),
+> plus the protocol-level optimization design (send-buffer pool + handle
+> cache, ack pipelining) and its GPU A/B — **validated under MPS**:
+> `ipc-pipe` cuts the engine `send()` stall **3.9×** on the realistic
+> Eagle3 case, and CUDA IPC runs clean in the real colocate loop (the
+> step-0 MPS hang was a probe bug, fixed in `e166c21`) — see that doc's
+> Part 5.
+
 ## TL;DR
 
 For realistic colocate hidden-state payloads, **CUDA IPC is ~170× faster
@@ -94,7 +104,9 @@ iteration (so CUDA IPC pays a real `cudaIpcOpenMemHandle` each time).
 - IPC re-pays `cudaIpcOpenMemHandle` every step because the engine
   reallocates hidden states each step. A handle cache keyed by device
   pointer is a possible future optimization, but at ~0.5 ms it is not
-  currently a bottleneck.
+  currently a bottleneck. See [`transport_optimization.md`](transport_optimization.md)
+  for the full protocol-level optimization plan (send-buffer pool +
+  handle cache, ack pipelining) and how to A/B it against this baseline.
 
 ## Reproduce
 
