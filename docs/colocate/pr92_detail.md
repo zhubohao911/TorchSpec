@@ -303,9 +303,3 @@ secure-cloud pod session (~1.6 h, ~$21). Full results in
 ## Full debug log
 
 [`docs/colocate/implementation_log.md`](https://github.com/lightseekorg/TorchSpec/blob/feature/colocate-training-inference/docs/colocate/implementation_log.md) — RunPod sessions #1-#3 (1×H100 / tiny green) + Vast sessions #4-#5 (4×H100 / full green) + follow-up rounds 1-10 (grad parity, CUDA IPC, multi-engine TP + fan-out, v0.5.10 port + multi-TP validation, RoPE fix, Mooncake crash diagnosis + fix, CUDA-IPC-default switch + transport benchmark, v0.5.10 full-matrix cutover, CUDA-IPC-default hang diagnosis + probe fix, transport optimization investigation + MPS re-benchmark, ipc-pipe productionization + one-pod GPU validation of issue-#81 follow-ups). Transport benchmark detail: [`docs/colocate/transport_benchmark.md`](https://github.com/lightseekorg/TorchSpec/blob/feature/colocate-training-inference/docs/colocate/transport_benchmark.md).
-
-
-
-
-
-
