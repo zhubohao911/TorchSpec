@@ -96,8 +96,8 @@ import modal
 # =============================================================================
 
 TORCHSPEC_REPO = "https://github.com/zhubohao911/TorchSpec.git"
-TORCHSPEC_BRANCH = "feature/dflash-training"
-TORCHSPEC_PIN_COMMIT = "96f0f5b"  # bump to bust Modal image cache
+TORCHSPEC_BRANCH = "main"
+TORCHSPEC_PIN_COMMIT = "068f253"  # latest origin/main @ 2026-05-21 (feat: post-norm support, FA4, network topology)
 SGLANG_COMMIT = "0f2df9370a1de1b4fb11b071d39ab3ce2287a350"
 SGLANG_PATCH_VERSION = "v0.5.8.post1"
 
