@@ -506,14 +506,32 @@ large-payload (Eagle3 160 MB) scale the standalone bench measures —
 consistent with Part 1: the transport is not a colocate step-time
 bottleneck.
 
-### Follow-up — `test_colocate_tiny` is red
+### Long-run stability — 4-GPU multi-engine, 3000 steps
 
-The `e166c21` probe fix correctly fail-fasts when `expandable_segments`
-is set, but `test_colocate_tiny._make_env` still forces
-`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` — incompatible with
-IPC-default. The test now fails fast (a clear error, better than the old
-hang) but is not green. Fix: drop `expandable_segments` from the test
-env for the IPC path, or have the colocate code strip it for IPC actors.
+A soak on the real multi-GPU topology: `train_entry` with
+`colocate_qwen0p6b_2eng_tp2_tiny.yaml` (2 engines × `engine_tp_size=2`,
+`dp_size=4`, union world 2N=8 on **4×H100** MPS-shared), CUDA IPC
+default, **3000 steps**.
+
+* **3000/3000 steps completed** — no hang, no crash, no NaN/OOM.
+* **step time flat** — ~0.16–0.18 s from step 80 through step 2980 (no
+  drift: step 80 = 0.177 s, step 2980 = 0.183 s).
+* **peak alloc flat** — ~5.2–5.45 GB throughout, oscillating with
+  variable `seq_len` but with **no upward trend** over 3000 steps (no
+  leak; the Phase-6 flatness criterion holds).
+
+The IPC-default colocate path is stable over a long multi-engine
+multi-GPU run — a clean stability signal on top of the correctness
+result above.
+
+### Follow-up — `test_colocate_tiny` env conflict (resolved)
+
+At round 9 (`1f62aaf`) the `e166c21` probe fix exposed a conflict:
+`test_colocate_tiny._make_env` still forced
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, incompatible with
+IPC-default, so the test fail-fasted at engine init. **Resolved by
+`7aeaa80`** (the `--full` IPC re-validation) — `test_colocate_tiny`
+passes again (verified green on the 3000-step pod's build).
 
 ---
 
