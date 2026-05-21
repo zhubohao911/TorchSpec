@@ -2467,6 +2467,13 @@ in one identical format, so the two arms are directly comparable.
 | #7 `ipc-pipe` (`--full` + flag) | GREEN after a fix (below) |
 | #4 convergence vs Mooncake, 1000 steps | GREEN — loss curves overlap, mean **0.006 %** / max **0.219 %** deviation (2 % tol) |
 
+Two operational notes for re-runs: (a) for #4, target the
+`::test_convergence_disagg_overlap` node id — running the whole
+`test_convergence.py` file also runs the 8B `test_phase7_convergence_loss_decreases`,
+which `pytest -x` lets block #4 on any failure; (b) the 8B runs leave
+large checkpoints in `outputs/` — `rm -rf outputs/* /tmp/ray/*` between
+phases or the 200 GB pod disk fills and Ray fails to acquire GPUs.
+
 ### Bug found by #7 — ipc-pipe OOM on the memory-tight 8B config
 
 `--full` with `TORCHSPEC_COLOCATE_IPC_PIPELINE=1` passed 12/13;
