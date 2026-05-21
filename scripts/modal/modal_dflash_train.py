@@ -98,8 +98,8 @@ import modal
 TORCHSPEC_REPO = "https://github.com/zhubohao911/TorchSpec.git"
 TORCHSPEC_BRANCH = "main"
 TORCHSPEC_PIN_COMMIT = "068f253"  # latest origin/main @ 2026-05-21 (feat: post-norm support, FA4, network topology)
-SGLANG_COMMIT = "0f2df9370a1de1b4fb11b071d39ab3ce2287a350"
-SGLANG_PATCH_VERSION = "v0.5.8.post1"
+SGLANG_COMMIT = "94f03a39dbd39edfc2b118b5357bbbadaaa9ad28"  # main's canonical pairing per tools/build_conda.sh
+SGLANG_PATCH_VERSION = "v0.5.10.post1"
 
 REPO_DIR = "/workspace/TorchSpec"
 SGLANG_DIR = f"{REPO_DIR}/_sglang"
@@ -209,7 +209,7 @@ sglang_image = (
         # 2. Apply sglang.patch
         f"rm -f {SGLANG_DIR}/python/sglang/srt/speculative/spec_training_info.py",
         f"cd {SGLANG_DIR} && git apply "
-        f"{REPO_DIR}/patches/sglang/{SGLANG_PATCH_VERSION}/sglang.patch || true",
+        f"{REPO_DIR}/patches/sglang/{SGLANG_PATCH_VERSION}/sglang.patch",
     )
     # Overlay local code on top of the pinned commit —
     # picks up local changes without full image rebuild.
