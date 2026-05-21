@@ -381,6 +381,19 @@ python scripts/colocate/bench_transport.py --arms ipc,ipc-pipe --engine-step-ms 
 
 ## Part 4 — Measured results (2026-05-21, H100 SXM)
 
+> **⚠ Validity caveat — this A/B was measured WITHOUT MPS.** The
+> benchmark spawns two plain processes (the report prints `MPS active:
+> no`); the real colocate path runs every engine↔trainer pair under CUDA
+> **MPS**. CUDA IPC and MPS interact, so the numbers below **do not
+> establish colocate-environment behaviour** — a non-MPS measurement was
+> used to reason about an MPS-only transport. A separate instrumented
+> diagnosis found the colocate loop **hangs at step 0 under MPS**,
+> upstream of the transport (`ipc_send` / `ipc_recv` are never reached).
+> Until this A/B is repeated under MPS and that hang is resolved, treat
+> the `3.2×` and the "ship `ipc-pipe`" recommendation as **provisional**.
+> Part 1's conclusion (no C++/CUDA/Triton kernel needed) is
+> MPS-independent and is unaffected.
+
 The four arms (`gloo`, `ipc`, `ipc-pool`, `ipc-pipe`) were run on a
 RunPod **1×H100 80GB SXM** (torch 2.4.1 + CUDA 12.4, no MPS), 5 warmup +
 30 measured iterations, a fresh payload allocated every iteration. All
@@ -455,15 +468,17 @@ step's round-trip is not inside the measured window at all.
 2. **First**, re-run `run_smoke_host.sh --full` on 4×H100 with IPC as the
    new default — the open item from round 7; it settles *stability*
    (the benchmark already settled *performance*).
-3. **Ship Opt 2 as a single change — `ipc-pipe` (pool + ack pipelining
-   together).** The GPU A/B measured **3.2×** on the realistic
-   engine-`send()` stall. Do **not** ship Opt 1 (`ipc-pool`) on its own:
-   measured break-even, and a regression at 256 MB. Fold the prototype
-   from [`bench_transport.py`](../../scripts/colocate/bench_transport.py)
-   into [`cuda_ipc.py`](../../torchspec/colocate/cuda_ipc.py) behind one
-   `TORCHSPEC_COLOCATE_IPC_PIPELINE` flag (it implies the pool), with the
-   `flush()`-at-loop-exit drain and the variable-`seq_len` pool-resize
-   handling from Opt 2's correctness notes.
+3. **[ON HOLD — pending MPS validation.]** The GPU A/B measured **3.2×**
+   on the realistic engine-`send()` stall for `ipc-pipe` (pool + ack
+   pipelining), and `ipc-pool` alone as break-even / a 256 MB regression
+   — **but the A/B ran without MPS** (see the Part 4 caveat). The real
+   colocate path runs under MPS and currently **hangs at step 0**, before
+   the transport is even reached. Do **not** fold anything into
+   [`cuda_ipc.py`](../../torchspec/colocate/cuda_ipc.py) until the A/B is
+   re-run under MPS *and* that hang is resolved. The intended end state,
+   once validated, is still a single `TORCHSPEC_COLOCATE_IPC_PIPELINE`
+   flag (it implies the pool) with the `flush()`-at-loop-exit drain and
+   variable-`seq_len` pool-resize handling from Opt 2's correctness notes.
 4. **Opt 3 / Opt 4 — skip.** Opt 2 already takes the ack to 0.14 ms, so
    the IPC-event ack (Opt 3) has nothing left to win; Opt 4 (static
    metadata) is in the noise.
@@ -471,6 +486,9 @@ step's round-trip is not inside the measured window at all.
    worthwhile, not urgent. Do it when colocate step-time optimization
    comes up, not before.
 
-**Bottom line:** no C++/CUDA/Triton. The one protocol-level change worth
-making is `ipc-pipe` (ack pipelining) — GPU-measured at 3.2× on the
-engine stall — and it is a low-priority, opt-in follow-up, not a blocker.
+**Bottom line:** no C++/CUDA/Triton — that conclusion (Part 1) is
+MPS-independent and stands. The `ipc-pipe` 3.2× result, by contrast, was
+measured **without MPS** and is **not yet valid for the colocate
+environment** (which is MPS-based and currently hangs at step 0) — see
+the Part 4 caveat. It is on hold pending an MPS re-run, not shippable as
+recorded.

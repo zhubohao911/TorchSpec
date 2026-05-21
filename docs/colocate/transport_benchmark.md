@@ -7,9 +7,10 @@ Measured **2026-05-21** on a RunPod **1×H100 80GB HBM3** (SXM), torch
 > whether to hand-write a C++/CUDA or Triton kernel for this transport
 > (no — the only kernel in the path is a bandwidth-saturated D→D copy),
 > plus the protocol-level optimization design (send-buffer pool + handle
-> cache, ack pipelining) and its GPU A/B — measured 2026-05-21 on H100:
-> ack pipelining (`ipc-pipe`) cuts the engine `send()` stall **3.2×** on
-> the realistic Eagle3 case (see that doc's Part 4).
+> cache, ack pipelining) and its GPU A/B. **Caveat:** that A/B was
+> measured **without MPS**; the `ipc-pipe` 3.2× figure is provisional and
+> not yet validated for the MPS-based colocate environment — see that
+> doc's Part 4.
 
 ## TL;DR
 
