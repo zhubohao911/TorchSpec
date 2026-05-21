@@ -2204,3 +2204,60 @@ re-run with IPC as the default. The phase4/6/7 tests now exercise the IPC
 path (including 200-step alloc-flatness and 50-step convergence, with
 `expandable_segments` off). The benchmark settles the *performance*
 question; that run settles the *stability* question.
+
+## Follow-up round 8 — v0.5.10.post1 full `--full` matrix + cutover (2026-05-21, RunPod 4×H100)
+
+Round 5 validated `v0.5.10.post1/colocate.patch` at tp=1 and
+engine_tp_size=2. This round runs the **complete `run_smoke_host.sh
+--full` matrix** against v0.5.10 and cuts the colocate default over to
+it.
+
+### Full matrix — GREEN on 4×H100
+
+`run_smoke_host.sh --full` with `SGLANG_PATCH_VERSION=v0.5.10.post1` on
+a RunPod 4×H100 pod (branch HEAD `4fce80d`). All 13 tests across 9
+files pass:
+
+```
+test_phase4_tiny_one_step                   PASSED
+test_phase7_tiny_loss_decreases             PASSED  (loss 12.02 → 9.74)
+test_phase4_one_step_completes_end_to_end   PASSED  (4-GPU, 4-engine Qwen3-8B)
+test_phase7_grad_parity_smoke               PASSED
+test_phase7_grad_parity_determinism         PASSED
+test_phase7_grad_parity_full                PASSED
+test_colocate_checkpoint_save / _resume     PASSED
+test_colocate_ipc_*                         PASSED
+test_colocate_engine_tp2_end_to_end         PASSED  (engine_tp_size=2)
+test_colocate_multi_engine_tp2_end_to_end   PASSED  (2 engines × tp=2)
+test_phase6_peak_alloc_flatness             PASSED  (200 steps)
+test_phase7_convergence_loss_decreases      PASSED
+```
+
+It took two runs. The first stopped at `test_phase7_grad_parity_smoke`
+with `HTTP 429 Too Many Requests` from the HF Hub (unauthenticated
+Qwen3-8B metadata fetch) — an environment rate-limit, **not** a patch
+bug; `test_phase4_one_step` (4-engine Qwen3-8B) had already passed in
+that run. The second run set `HF_TOKEN` and ran the remaining 7 files
+(skipping the 2 already green) — 10/10 passed.
+
+### Cutover — v0.5.10.post1 is now the default (`092b68f`)
+
+With v0.5.10 fully validated, the colocate default was repointed off
+v0.5.8.post1:
+
+* `run_smoke_host.sh` — `SGLANG_COMMIT` / `SGLANG_PATCH_VERSION` defaults.
+* `apply_sglang_patch.sh` — `--colocate` defaults to v0.5.10.post1
+  (the now-redundant per-mode version branch was collapsed).
+* `modal_colocate_smoke.py` — `SGLANG_COMMIT` / `SGLANG_PATCH_VERSION`.
+
+v0.5.8.post1 stays selectable via `SGLANG_PATCH_VERSION=v0.5.8.post1`
+but is no longer the maintained target — future colocate patch work
+lands in v0.5.10.post1 directly, ending the forward-port treadmill.
+
+### Still open
+
+* `pp_size>1` — blocked by an explicit guard in the colocate patch;
+  out of scope for the current colocate plan.
+* A TorchSpec-side `_init_rope` fix (transformers `rope_type="default"`,
+  commit `be399a0`) was needed for the matrix to run on a
+  current-transformers environment — not part of the sglang patch.
