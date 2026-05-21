@@ -1,12 +1,13 @@
 # Copyright (c) 2026 LightSeek Foundation
 # MIT License
 
-"""Unit tests for the CUDA IPC transport opt-in plumbing.
+"""Unit tests for the CUDA IPC transport plumbing.
 
-These run on a Mac dev box (no real CUDA) — they exercise the env-var
-contract and the fail-fast guard, not the actual IPC handle exchange
-(which needs two processes on one GPU and is covered by the colocate
-e2e tests with TORCHSPEC_COLOCATE_IPC=1).
+CUDA IPC is the default colocate hidden-state transport; these tests
+run on a Mac dev box (no real CUDA) and exercise the env-var contract
+(default-on, opt-out via TORCHSPEC_COLOCATE_IPC=0) and the fail-fast
+guard — not the actual IPC handle exchange (which needs two processes
+on one GPU and is covered by the colocate e2e tests).
 """
 
 from __future__ import annotations
@@ -33,18 +34,21 @@ def _clean():
 @pytest.mark.parametrize(
     "value,expected",
     [
+        # Default-on: any value that is not an explicit disable token
+        # (including an empty string and unrecognised junk) enables IPC.
         ("1", True), ("true", True), ("YES", True),
-        ("0", False), ("false", False), ("", False),
+        ("garbage", True), ("", True),
+        ("0", False), ("false", False), ("no", False), ("OFF", False),
     ],
 )
-def test_ipc_requested_env_toggle(value, expected):
+def test_ipc_enabled_env_toggle(value, expected):
     os.environ["TORCHSPEC_COLOCATE_IPC"] = value
-    assert cuda_ipc.ipc_requested() is expected
+    assert cuda_ipc.ipc_enabled() is expected
 
 
-def test_ipc_requested_unset():
+def test_ipc_enabled_unset_defaults_on():
     os.environ.pop("TORCHSPEC_COLOCATE_IPC", None)
-    assert cuda_ipc.ipc_requested() is False
+    assert cuda_ipc.ipc_enabled() is True
 
 
 def test_ensure_ipc_usable_raises_when_probe_fails(monkeypatch):

@@ -3,27 +3,28 @@
 
 """CUDA IPC zero-copy hidden-state transport for colocate mode.
 
-The default colocate hidden-state plane stages through host memory: the
-engine does a D->H copy, ships the bytes over the gloo ``meta_group``,
-and the trainer does an H->D copy. Two PCIe-class copies per tensor per
-step. Both processes share the *same physical GPU* under MPS, so the
-host round-trip is pure overhead — the data never needs to leave the
-device.
-
-This module is the zero-copy alternative. The engine exports a CUDA IPC
-handle for each hidden-state tensor (via PyTorch's
+This is the **default** colocate hidden-state transport. The engine
+exports a CUDA IPC handle for each hidden-state tensor (via PyTorch's
 ``torch.multiprocessing`` reduction machinery), ships the small handle
 blobs over the gloo channel, and the trainer maps the engine's GPU
 memory directly and does a single on-device D->D copy into its own
 buffer. No host round-trip.
 
-Opt-in
-------
-This path is **opt-in** via ``TORCHSPEC_COLOCATE_IPC=1`` and layered on
-top of ``transfer_mode=nccl`` (it replaces only the gloo transport, not
-the union-world bootstrap). Both the engine connector and the trainer
-fetcher read the *same* env var, so the two sides always agree on the
-transport without a runtime negotiation message.
+The fallback is the gloo CPU-staged transport: the engine does a D->H
+copy, ships the bytes over the gloo ``meta_group``, and the trainer
+does an H->D copy — two PCIe-class copies per tensor per step. Both
+processes share the *same physical GPU* under MPS, so that host
+round-trip is pure overhead (the data never needs to leave the device)
+— which is exactly what this IPC path eliminates.
+
+Default & opt-out
+-----------------
+CUDA IPC is **on by default**, layered on top of ``transfer_mode=nccl``
+(it replaces only the gloo transport, not the union-world bootstrap).
+Set ``TORCHSPEC_COLOCATE_IPC=0`` to fall back to the gloo CPU-staged
+transport. Both the engine connector and the trainer fetcher read the
+*same* env var, so the two sides always agree on the transport without
+a runtime negotiation message.
 
 The ``expandable_segments`` conflict
 ------------------------------------
@@ -70,13 +71,23 @@ from typing import Dict, Optional, Tuple
 
 _IPC_ENV = "TORCHSPEC_COLOCATE_IPC"
 
+# Env values that disable IPC and fall back to the gloo transport.
+_IPC_DISABLE_VALUES = ("0", "false", "no", "off")
+
 # Cached (ok, reason) from the one-time capability probe.
 _probe_cache: Optional[Tuple[bool, str]] = None
 
 
-def ipc_requested() -> bool:
-    """True iff the operator opted into the CUDA IPC transport."""
-    return os.environ.get(_IPC_ENV, "").strip().lower() in ("1", "true", "yes")
+def ipc_enabled() -> bool:
+    """True iff the CUDA IPC zero-copy transport is selected.
+
+    CUDA IPC is the **default** colocate hidden-state transport. Any
+    value of ``TORCHSPEC_COLOCATE_IPC`` other than an explicit disable
+    token (``0`` / ``false`` / ``no`` / ``off``) — including the var
+    being unset — selects it. Set one of those tokens to fall back to
+    the gloo CPU-staged transport.
+    """
+    return os.environ.get(_IPC_ENV, "").strip().lower() not in _IPC_DISABLE_VALUES
 
 
 def probe_ipc_capability() -> Tuple[bool, str]:
@@ -113,15 +124,15 @@ def probe_ipc_capability() -> Tuple[bool, str]:
             hint = (
                 " — likely PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True; "
                 "CUDA IPC needs plain cudaMalloc memory. Drop expandable_"
-                "segments for the colocate run, or leave TORCHSPEC_COLOCATE_IPC"
-                " unset to use the gloo transport."
+                "segments for the colocate run, or set TORCHSPEC_COLOCATE_IPC=0"
+                " to use the gloo transport."
             )
         _probe_cache = (False, f"{e!r}{hint}")
     return _probe_cache
 
 
 def ensure_ipc_usable() -> None:
-    """Raise a clear error if IPC was requested but is not usable.
+    """Raise a clear error if IPC (the default transport) is not usable.
 
     Called once at connector/fetcher construction. Both sides run the
     same check on the same platform, so they fail (or pass) together.
@@ -129,8 +140,10 @@ def ensure_ipc_usable() -> None:
     ok, reason = probe_ipc_capability()
     if not ok:
         raise RuntimeError(
-            f"TORCHSPEC_COLOCATE_IPC is set but CUDA IPC is not usable on "
-            f"this host: {reason}"
+            f"CUDA IPC is the default colocate hidden-state transport but "
+            f"is not usable on this host: {reason}. Set "
+            f"TORCHSPEC_COLOCATE_IPC=0 to fall back to the gloo CPU-staged "
+            f"transport."
         )
 
 

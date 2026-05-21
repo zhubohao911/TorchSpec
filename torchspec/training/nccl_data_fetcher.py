@@ -47,7 +47,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 import torch
 import torch.distributed as dist
 
-from torchspec.colocate.cuda_ipc import ensure_ipc_usable, ipc_recv, ipc_requested
+from torchspec.colocate.cuda_ipc import ensure_ipc_usable, ipc_enabled, ipc_recv
 
 logger = logging.getLogger("torchspec.training.nccl_data_fetcher")
 
@@ -279,9 +279,9 @@ class NcclMultiTensorFetcher:
         self._src = int(src_global_rank)
         self._device = device
         self._group = group
-        # Opt-in CUDA IPC transport (must match the engine connector).
-        # Fail fast at construction if requested but unusable.
-        self._use_ipc = ipc_requested() and _group_is_gloo(self._group)
+        # CUDA IPC transport — the default; must match the engine
+        # connector. Fail fast at construction if it is unusable.
+        self._use_ipc = ipc_enabled() and _group_is_gloo(self._group)
         if self._use_ipc:
             ensure_ipc_usable()
 

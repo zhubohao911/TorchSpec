@@ -87,13 +87,16 @@ def _run_arm(
     # both arms (see torchspec/colocate/determinism.py).
     env["TORCHSPEC_GRAD_PARITY"] = "1"
     if ipc:
-        # CUDA IPC transport. The colocate path drops expandable_segments
-        # for IPC mode (the classic capability-free handle path needs
-        # non-expandable memory), so do not set it here.
+        # CUDA IPC transport (the default). The colocate path drops
+        # expandable_segments for IPC mode (the classic capability-free
+        # handle path needs non-expandable memory), so do not set it here.
         env["TORCHSPEC_COLOCATE_IPC"] = "1"
         env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
         env.pop("PYTORCH_ALLOC_CONF", None)
     else:
+        # CUDA IPC is the default transport — force it off explicitly so
+        # the gloo arm really exercises the gloo CPU-staged path.
+        env["TORCHSPEC_COLOCATE_IPC"] = "0"
         env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         env.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 

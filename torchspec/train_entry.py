@@ -492,10 +492,13 @@ def train_async_no_generation(args):
                     int(getattr(args, "inference_num_gpus_per_engine", 1) or 1)
                 ),
             }
-            # Re-publish the operator's CUDA IPC opt-in through the same
+            # Re-publish any explicit CUDA IPC override through the same
             # env contract so the trainer-side fetcher and the engine-side
             # connector make an identical transport decision (a one-sided
-            # choice would desync the wire protocol).
+            # choice would desync the wire protocol). CUDA IPC is the
+            # default transport; when the var is unset both sides default
+            # to it independently, so only an explicit value needs to be
+            # forwarded (typically TORCHSPEC_COLOCATE_IPC=0 to force gloo).
             _ipc_opt = os.environ.get("TORCHSPEC_COLOCATE_IPC")
             if _ipc_opt is not None:
                 union_env["TORCHSPEC_COLOCATE_IPC"] = _ipc_opt

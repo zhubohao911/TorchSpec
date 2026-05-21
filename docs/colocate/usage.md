@@ -232,21 +232,24 @@ patch. Anything still ⬜ in that doc is gated on it.
   Combining USP with the union-world FSDP subgroup is left as future
   work; `TrainerActor.init` errors out fast if both flags are set.
 
-### Hidden-state transport (gloo default, CUDA IPC opt-in)
+### Hidden-state transport (CUDA IPC default, gloo opt-out)
 
-The engine→trainer hidden-state plane defaults to a **gloo
-CPU-staged** transport (engine D→H copy, gloo ship, trainer H→D copy):
-NCCL cannot form a communicator with two ranks on one physical GPU.
+The engine→trainer hidden-state plane defaults to the **CUDA IPC**
+zero-copy transport: the engine exports a CUDA IPC handle per tensor
+and the trainer maps that memory directly, doing a single on-device
+D→D copy with no host round-trip. (NCCL cannot be used here at all — it
+refuses a communicator with two ranks on one physical GPU.)
 
-Set **`TORCHSPEC_COLOCATE_IPC=1`** to use the **CUDA IPC** transport
-instead — the engine exports a CUDA IPC handle per tensor and the
-trainer maps the memory directly, doing a single on-device D→D copy
-(no host round-trip). It is opt-in because CUDA IPC needs plain
-`cudaMalloc` memory and **fails on `expandable_segments:True`** (which
-colocate sets by default). On an incompatible host the connector
-fails fast at construction with an actionable message; either drop
-`expandable_segments` for the run or leave `TORCHSPEC_COLOCATE_IPC`
-unset.
+Set **`TORCHSPEC_COLOCATE_IPC=0`** to fall back to the **gloo
+CPU-staged** transport (engine D→H copy, gloo ship, trainer H→D copy —
+two PCIe-class copies per tensor per step).
+
+CUDA IPC needs plain `cudaMalloc` memory and **fails on
+`expandable_segments:True`**, so while IPC is on (the default) colocate
+does **not** inject `expandable_segments`; only the gloo fallback does.
+On a host where IPC is genuinely unusable the connector fails fast at
+construction with an actionable message — set `TORCHSPEC_COLOCATE_IPC=0`
+to use the gloo transport.
 
 ## Troubleshooting
 

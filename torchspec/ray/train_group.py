@@ -102,19 +102,19 @@ class RayTrainGroup:
         )
 
         # MPS colocate: every trainer process must talk to the same MPS
-        # control daemon as its paired engine, and the allocator must use
-        # expandable_segments so two cohabiting CUDA contexts can grow
-        # without thrashing the segment table.
+        # control daemon as its paired engine. The gloo-fallback transport
+        # also wants expandable_segments so two cohabiting CUDA contexts
+        # can grow without thrashing the segment table.
         if is_mps_colocate(self.args):
-            from torchspec.colocate.cuda_ipc import ipc_requested
+            from torchspec.colocate.cuda_ipc import ipc_enabled
 
             if not getattr(self.args, "colocate_mps_unavailable", False):
                 env_vars.update(mps_client_env())
-            # Skip expandable_segments when CUDA IPC is opted in: IPC's
-            # classic capability-free handle path needs non-expandable
+            # Skip expandable_segments while CUDA IPC is on (the default):
+            # IPC's classic capability-free handle path needs non-expandable
             # memory (expandable_segments forces pidfd_getfd, which needs
             # CAP_SYS_PTRACE — not granted in typical containers).
-            if not ipc_requested():
+            if not ipc_enabled():
                 env_vars.setdefault(
                     "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
                 )

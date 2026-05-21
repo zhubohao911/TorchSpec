@@ -3,20 +3,21 @@
 
 """Colocate CUDA IPC transport — end-to-end.
 
-The default colocate hidden-state plane is a gloo CPU-staged transport
-(engine D->H, gloo ship, trainer H->D). ``TORCHSPEC_COLOCATE_IPC=1``
-opts into the zero-copy CUDA IPC transport instead: the engine exports
-a CUDA IPC handle per tensor and the trainer maps the memory directly
-(one on-device D->D copy, no host round-trip).
+CUDA IPC is the **default** colocate hidden-state transport: the engine
+exports a CUDA IPC handle per tensor and the trainer maps the memory
+directly (one on-device D->D copy, no host round-trip). The fallback is
+the gloo CPU-staged transport (engine D->H, gloo ship, trainer H->D),
+selected with ``TORCHSPEC_COLOCATE_IPC=0``.
 
 This test runs the colocate tiny config with ``TORCHSPEC_COLOCATE_IPC=1``
-and asserts the run completes with a sane, decreasing loss. Because the
-IPC path is fail-fast (the connector/fetcher raise at construction if
-``probe_ipc_capability`` says IPC is unusable — never a silent fallback
-to gloo), a successful completion means the IPC transport actually
-carried every step's hidden states.
+(explicit, though it is also the default) and asserts the run completes
+with a sane, decreasing loss. Because the IPC path is fail-fast (the
+connector/fetcher raise at construction if ``probe_ipc_capability`` says
+IPC is unusable — never a silent fallback to gloo), a successful
+completion means the IPC transport actually carried every step's hidden
+states.
 
-When IPC is opted in the colocate path skips the ``expandable_segments``
+When IPC is on the colocate path skips the ``expandable_segments``
 allocator config (IPC's classic capability-free handle path needs plain
 ``cudaMalloc`` memory — see ``torchspec/colocate/cuda_ipc.py``), so this
 test deliberately does **not** export it.
@@ -73,9 +74,10 @@ def test_colocate_ipc_transport_end_to_end():
 
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = "0"
-    # Opt into the CUDA IPC transport. Deliberately do NOT set
-    # expandable_segments — the colocate path drops it for IPC mode so
-    # the classic capability-free handle path is used.
+    # Select the CUDA IPC transport explicitly (it is also the default).
+    # Deliberately do NOT set expandable_segments — the colocate path
+    # drops it for IPC mode so the classic capability-free handle path
+    # is used.
     env["TORCHSPEC_COLOCATE_IPC"] = "1"
     env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
     env.pop("PYTORCH_ALLOC_CONF", None)

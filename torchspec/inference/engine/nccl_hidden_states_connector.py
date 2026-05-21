@@ -64,7 +64,7 @@ from typing import Dict, Optional
 import torch
 import torch.distributed as dist
 
-from torchspec.colocate.cuda_ipc import ensure_ipc_usable, ipc_requested, ipc_send
+from torchspec.colocate.cuda_ipc import ensure_ipc_usable, ipc_enabled, ipc_send
 
 logger = logging.getLogger("torchspec.inference.engine.nccl_hidden_states_connector")
 
@@ -143,11 +143,11 @@ class NcclHiddenStatesConnector:
             )
         self._dst = int(dst_global_rank)
         self._group = group
-        # Opt-in CUDA IPC transport replaces the gloo CPU-staged path.
-        # Fail fast at construction if it was requested but the platform
-        # can't do it (e.g. expandable_segments active) so the engine and
-        # trainer never disagree on the wire format.
-        self._use_ipc = ipc_requested() and _group_is_gloo(self._group)
+        # CUDA IPC transport (the default) replaces the gloo CPU-staged
+        # path. Fail fast at construction if the platform can't do it
+        # (e.g. expandable_segments active) so the engine and trainer
+        # never disagree on the wire format.
+        self._use_ipc = ipc_enabled() and _group_is_gloo(self._group)
         if self._use_ipc:
             ensure_ipc_usable()
 
