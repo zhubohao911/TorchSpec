@@ -2051,51 +2051,13 @@ space), so a different host (bare metal, hyperscaler, more caps) does
 SIGURG-based async preemption (the usual Go-embedded-in-C culprit) was
 tried — the run reproduced the identical `runtime.sigfwd` SIGSEGV.
 
-### Mooncake-disagg crash — FIXED: pin `mooncake-transfer-engine==0.3.10.post1` (`dfbb823`)
-
-The Go toolchain of each Mooncake wheel's `libetcd_wrapper.so` was
-inspected (`strings | grep go1.`):
-
-| Mooncake version | Go toolchain |
-|---|---|
-| **0.3.10.post2** (was installed — crashes) | **go1.25.9** |
-| 0.3.10.post1 | go1.24.13 |
-| 0.3.10 / 0.3.9 / 0.3.8.post1 | go1.24.x |
-
-`0.3.10.post2` is the **only** build using Go 1.25 — and `post1` is the
-*same Mooncake release*, just rebuilt (engine.so / libetcd_wrapper.so
-differ only in size). That isolates the regression to the **Go 1.25
-toolchain**, not a Mooncake code change.
-
-**GPU-confirmed 2026-05-20 (RunPod 2×H100).** With
-`mooncake-transfer-engine==0.3.10.post1` (go1.24.13) force-installed,
-the disagg path (`disagg_qwen0p6b_tiny.yaml`, 2 steps) **completed
-cleanly** — `Training: 100% 2/2`, loss 12.073 → 11.604, checkpoint
-saved, **no `Segfault encountered` / `runtime.sigfwd` / `SIGSEGV`**.
-The same run on `0.3.10.post2` dies before step 1. `pyproject.toml` is
-pinned exactly to `==0.3.10.post1` — an exact pin, not a `>=` ceiling,
-because every newer wheel will likely also ship on go1.25. The rationale
-is documented at both the pin (`pyproject.toml`) and the load site
-(`torchspec/transfer/mooncake/store.py`, next to the
-`from mooncake.store import …`). Revisit when Mooncake ships a
-non-crashing go1.25 build.
-
-This **unblocks** the literal vs-Mooncake-disagg grad-parity comparison
-(the disagg path now runs). Rebuilding that comparison test
-(colocate-vs-disagg per-parameter gradients) is the remaining piece —
-the gloo-vs-CUDA-IPC `grad_parity_full` covers the numeric question
-host-independently in the meantime.
-
 ### Tracked follow-ups after round 4
 
 * **Multi-node colocate** — code-complete, untested; needs a 2-node cluster.
 * **v0.5.10 patch multi-TP** — port `build_hidden_states_writer` /
   `_send_hidden_states_to_nccl` into `v0.5.10.post1/colocate.patch`.
-* **Mooncake-disagg grad parity** — the Mooncake crash is **fixed** (pin
-  above); what remains is to rebuild the colocate-vs-disagg per-parameter
-  gradient comparison test that was removed in the `grad_parity_full`
-  reframe. The colocate gloo-vs-IPC parity test covers the numeric
-  question in the meantime.
+* **Mooncake-disagg crash** — diagnosed above (the Go 1.25 `sigfwd`
+  conflict); a fix is still needed (→ round 6).
 
 ## Follow-up round 5 — v0.5.10.post1 forward-port GPU validation (2026-05-21, RunPod)
 
@@ -2152,7 +2114,43 @@ v0.5.10 should become the sole maintained patch.
 
 ---
 
-## Transport: CUDA IPC made the default + gloo-vs-IPC benchmark (2026-05-21)
+## Follow-up round 6 — Mooncake-disagg crash FIXED (2026-05-21)
+
+The round-4 Mooncake SIGSEGV is fixed. The Go toolchain of each Mooncake
+wheel's `libetcd_wrapper.so` was inspected (`strings | grep go1.`):
+
+| Mooncake version | Go toolchain |
+|---|---|
+| **0.3.10.post2** (was installed — crashes) | **go1.25.9** |
+| 0.3.10.post1 | go1.24.13 |
+| 0.3.10 / 0.3.9 / 0.3.8.post1 | go1.24.x |
+
+`0.3.10.post2` is the **only** build using Go 1.25 — and `post1` is the
+*same Mooncake release*, just rebuilt (engine.so / libetcd_wrapper.so
+differ only in size). That isolates the regression to the **Go 1.25
+toolchain**, not a Mooncake code change.
+
+**GPU-confirmed 2026-05-20 (RunPod 2×H100).** With
+`mooncake-transfer-engine==0.3.10.post1` (go1.24.13) force-installed,
+the disagg path (`disagg_qwen0p6b_tiny.yaml`, 2 steps) **completed
+cleanly** — `Training: 100% 2/2`, loss 12.073 → 11.604, checkpoint
+saved, **no `Segfault encountered` / `runtime.sigfwd` / `SIGSEGV`**.
+The same run on `0.3.10.post2` dies before step 1. `pyproject.toml` is
+pinned exactly to `==0.3.10.post1` (`dfbb823`) — an exact pin, not a
+`>=` ceiling, because every newer wheel will likely also ship on go1.25.
+The rationale is documented at both the pin (`pyproject.toml`) and the
+load site (`torchspec/transfer/mooncake/store.py`, `327f2ef`). Revisit
+when Mooncake ships a non-crashing go1.25 build.
+
+This **unblocks** the literal vs-Mooncake-disagg grad-parity comparison
+(the disagg path now runs). Rebuilding that comparison test
+(colocate-vs-disagg per-parameter gradients) is the remaining piece —
+the gloo-vs-CUDA-IPC `grad_parity_full` covers the numeric question
+host-independently in the meantime.
+
+---
+
+## Follow-up round 7 — CUDA IPC made the default transport + transport benchmark (2026-05-21)
 
 The colocate hidden-state transport was flipped: **CUDA IPC is now the
 default**, with the gloo CPU-staged path as an explicit opt-out. Driven
