@@ -405,6 +405,39 @@ stream 并行硬件特性）负责真正的并发执行。
 - **生命周期**：daemon 必须**先于**该机上任何 GPU app 启动，**后于**它们关
   闭。顺序错了 client 会连不上。
 
+### CUDA IPC × MPS: a discarded IPC share can wedge the context
+### CUDA IPC × MPS：丢弃的 IPC 共享会把 context 卡死
+
+A real gotcha found in colocate (implementation_log round 9). CUDA IPC
+(`cudaIpcGetMemHandle` / PyTorch's `reduce_tensor`) has a **producer
+side**: sharing a tensor over IPC registers it with internal
+ref-counting machinery that expects a consumer to map it and a clean
+teardown. If you share a scratch tensor as a "capability smoke test" and
+then just **discard it** — no consumer ever maps it — that machinery is
+left dangling. **Under MPS**, where all clients share the MPS server's
+context, that dangling state wedges *subsequent* CUDA work on the GPU:
+the next kernel launch hangs. Without MPS the same probe is harmless,
+which is why it slipped through non-MPS testing.
+
+Lesson: a CUDA IPC "does it work?" probe must be **non-destructive** —
+check the *config preconditions* (memory must be plain `cudaMalloc`, not
+`expandable_segments`); do **not** actually `reduce_tensor()` a throwaway
+tensor. The fix (`e166c21`) replaced the destructive probe with a
+`PYTORCH_CUDA_ALLOC_CONF` config check.
+
+🇨🇳 colocate 里踩到的真实坑（implementation_log round 9）。CUDA IPC
+（`cudaIpcGetMemHandle` / PyTorch 的 `reduce_tensor`）有**生产者侧**状态：
+共享张量会把它登记进内部引用计数机制，预期有消费者去映射、最终干净拆除。
+若把一个临时张量当"能力探测"共享出去然后直接**丢弃**（无任何消费者映射），
+这套机制就停在悬挂状态。**在 MPS 下**（所有客户端共享 MPS server 的
+context），该悬挂状态会卡死 GPU 上**后续**的 CUDA 工作——下一个 kernel
+启动就 hang。不开 MPS 时同样的探测无害，所以它躲过了非-MPS 测试。
+
+教训：CUDA IPC 的"能不能用"探测必须**非破坏性**——检查*配置前提*（显存须为
+普通 `cudaMalloc`，非 `expandable_segments`），**不要**真的对临时张量做
+`reduce_tensor()`。修复（`e166c21`）把破坏性探测换成了
+`PYTORCH_CUDA_ALLOC_CONF` 配置检查。
+
 ### Compute capability gotcha
 ### Compute capability 的坑
 

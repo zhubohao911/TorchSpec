@@ -93,10 +93,16 @@ iteration (so CUDA IPC pays a real `cudaIpcOpenMemHandle` each time).
 
 ### Caveats
 
-- Measured **without MPS** (the benchmark spawns two plain processes).
-  Real colocate runs under MPS, which changes kernel-scheduling
-  concurrency, not the transport mechanism — and the transfer is serial
-  (engine sends while trainer waits), so there is little kernel overlap
+- The tables above were measured **without MPS** (two plain processes);
+  the benchmark was later **re-run under MPS** —
+  [`transport_optimization.md`](transport_optimization.md) Part 5 — and
+  the ratios held (CUDA IPC stays flat, ~85–170× over gloo on the Eagle3
+  payload), so this caveat is **resolved**. The step-0 MPS hang that
+  briefly blocked IPC-default was a separate probe bug (`e166c21`), not
+  a transport issue. The rest of this note still holds: MPS changes
+  kernel-scheduling concurrency, not the transport mechanism — and the
+  transfer is serial (engine sends while trainer waits), so there is
+  little kernel overlap
   to gain. The headline ratio holds.
 - The gloo arm uses pageable host memory (`.to("cpu")`), matching the
   current `NcclHiddenStatesConnector`. Pinned host memory would speed

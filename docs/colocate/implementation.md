@@ -19,10 +19,17 @@
 >   probe fix), and [`transport_benchmark.md`](transport_benchmark.md).
 > - **`expandable_segments`** is wanted only by the gloo fallback; the CUDA
 >   IPC default actively disables it (IPC needs plain `cudaMalloc` memory).
-> - The phase plan completed (Phases 0-8) plus follow-up rounds 1-9; the
+> - The phase plan completed (Phases 0-8) plus follow-up rounds 1-10; the
 >   `--full` matrix is GPU-green. `implementation_log.md` is the source of
 >   truth for what actually happened. Original text below is kept for the
 >   design rationale and flagged inline.
+> - **Transport optimization** was investigated separately —
+>   [`transport_optimization.md`](transport_optimization.md): no
+>   hand-written C++/CUDA/Triton kernel is needed (the path is a
+>   bandwidth-bound D→D copy plus driver-API calls); the worthwhile
+>   headroom is protocol-level (`ipc-pipe` ack pipelining — 3.9× on the
+>   engine-`send()` stall) and **low-priority**, since the transport is
+>   only ~1 % of a colocate step. Round 10 in the log.
 
 The plan is **phased**: each phase is independently runnable and testable. Do
 not skip ahead — Phase 3 (the data plane) is far easier to debug if Phases 1

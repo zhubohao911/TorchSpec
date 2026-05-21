@@ -2357,3 +2357,73 @@ so CUDA IPC is not a step-time factor. `peak_alloc` stayed flat to
 0.014 % over the 200-step stability test — the per-step IPC handle
 export/open does not leak. Detail in
 `docs/colocate/transport_benchmark.md`.
+
+---
+
+## Follow-up round 10 — transport optimization investigation + MPS re-benchmark (2026-05-21)
+
+A standalone investigation of the CUDA IPC transport: is there
+kernel-level headroom, and do protocol-level optimizations hold up under
+MPS? Full write-up in
+[`transport_optimization.md`](transport_optimization.md); summary here.
+
+### Do we need a hand-written C++/CUDA or Triton kernel? — No
+
+The CUDA IPC transport has **no GPU compute kernel** to optimize. The
+path is: `cudaIpcGetMemHandle` (driver API) → a small handle blob over
+gloo → `cudaIpcOpenMemHandle` (driver API) → one D→D `cudaMemcpyAsync`.
+The only kernel is that copy, and it already runs at ~1 TB/s (HBM
+bandwidth — 0.26 ms for 256 MB). A custom CUDA/Triton copy kernel cannot
+beat a bandwidth-bound copy; the rest of the cost is driver API + a gloo
+control message, neither of which is GPU device code. Conclusion: no
+C++/CUDA/Triton — the only headroom is protocol-level.
+
+### Protocol-level optimization arms (prototyped in `bench_transport.py`)
+
+Two arms were added to `scripts/colocate/bench_transport.py`:
+
+* **`ipc-pool`** (Opt 1) — a persistent send-buffer pool + a
+  trainer-side mapping cache, so `cudaIpcOpenMemHandle` is a one-time
+  cost instead of per-step.
+* **`ipc-pipe`** (Opt 2) — `ipc-pool` plus one-step ack pipelining
+  (non-blocking `isend` + double-buffered pool), lifting the ack
+  round-trip off the engine's critical path.
+
+### MPS re-benchmark — A/B GPU-measured (RunPod, H100)
+
+The transport A/B was re-run **under MPS** (the real colocate
+environment) after the round-9 probe fix unblocked CUDA IPC under MPS.
+All four arms (`gloo` / `ipc` / `ipc-pool` / `ipc-pipe`) passed the
+benchmark's byte-equality gate. Eagle3 160 MB, engine `send()` stall:
+
+| Measurement | Value |
+|---|--:|
+| `ipc` baseline | 3.0 ms |
+| `ipc-pipe` | 0.78 ms (**3.9×**) |
+| `cudaIpcOpenMemHandle` — baseline → cache warm | 0.67 ms → 0.008 ms |
+| ack wait — baseline → pipelined-deferred | 2.07 ms → 0.12 ms |
+
+The non-MPS round-7/optimization numbers held — MPS does not change the
+transport story. A colocate-loop A/B (`train_entry` tiny, 50 steps, IPC
+vs gloo) found the two transports **indistinguishable in-loop on the
+tiny model** (~0.142 s step either way): the few-MB tiny payload is
+noise against the step; the transport only matters at Eagle3-scale.
+
+### Long-run stability — 4-GPU multi-engine, 3000 steps
+
+`train_entry` with `colocate_qwen0p6b_2eng_tp2_tiny.yaml` (2 engines ×
+`engine_tp_size=2`, `dp_size=4`, union world 2N=8 on 4×H100 MPS-shared),
+CUDA IPC default: **3000/3000 steps completed** — no hang/crash/NaN/OOM,
+step time flat ~0.16–0.18 s throughout, `peak_alloc` flat ~5.2–5.45 GB
+(no leak). A clean long-run stability signal for the IPC-default
+colocate path on the real multi-GPU multi-engine topology.
+
+### Outcome
+
+CUDA-IPC-as-default is correct and stable (rounds 9 + 10). `ipc-pipe`
+(ack pipelining) is a real but **low-priority** optimization — 3.9× on
+the engine-`send()` stall, but the transport is only ~1 % of a colocate
+step (round-9 `--full`), so it is not a step-time bottleneck. It is
+**not** wired into `cuda_ipc.py` — it lives as a `bench_transport.py`
+prototype; productionizing it is a tracked follow-up
+([`handoff_followups.md`](handoff_followups.md)). No C++/CUDA/Triton.

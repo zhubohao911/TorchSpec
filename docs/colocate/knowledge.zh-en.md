@@ -27,9 +27,10 @@ This document does **not** describe the implementation. See
 > opt-out fallback — both over a gloo `meta_group`. The union NCCL world,
 > MPS, fractional bundles, and memory-cap concepts below are all still
 > accurate. See [`implementation_log.md`](implementation_log.md) rounds 1
-> / 7 / 9 and [`transport_benchmark.md`](transport_benchmark.md). The
-> original NCCL-P2P text is kept for the design rationale and flagged
-> inline.
+> / 7 / 9 / 10, [`transport_benchmark.md`](transport_benchmark.md), and
+> [`transport_optimization.md`](transport_optimization.md) (the transport
+> kernel-vs-protocol investigation + MPS-validated A/B). The original
+> NCCL-P2P text is kept for the design rationale and flagged inline.
 >
 > 🇨🇳 **交叉核对 —— 2026-05-21 更新。** 本文讲的是*最初*的设计：hidden
 > states 通过 **NCCL P2P、设备内、GPU 本地的 `send`/`recv`** 传递。这部分
@@ -39,8 +40,10 @@ This document does **not** describe the implementation. See
 > **CUDA IPC 零拷贝（默认）** + **gloo CPU 中转（可选回退）**，都走 gloo
 > `meta_group`。下文关于 union NCCL world、MPS、分数 bundle、显存上限的
 > 概念依然正确。详见 [`implementation_log.md`](implementation_log.md) 的
-> round 1 / 7 / 9 与 [`transport_benchmark.md`](transport_benchmark.md)。
-> 原 NCCL-P2P 文字保留以说明设计思路，并在文中就地标注。
+> round 1 / 7 / 9 / 10、[`transport_benchmark.md`](transport_benchmark.md)
+> 以及 [`transport_optimization.md`](transport_optimization.md)（传输层
+> "要不要写 kernel" 的调查 + MPS 验证过的 A/B）。原 NCCL-P2P 文字保留以
+> 说明设计思路，并在文中就地标注。
 
 🇨🇳 本文**不**讨论具体实现。分阶段实施方案见 [`implementation.md`](implementation.md)。
 
