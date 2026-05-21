@@ -110,10 +110,14 @@ class RayTrainGroup:
 
             if not getattr(self.args, "colocate_mps_unavailable", False):
                 env_vars.update(mps_client_env())
-            # Skip expandable_segments while CUDA IPC is on (the default):
-            # IPC's classic capability-free handle path needs non-expandable
-            # memory (expandable_segments forces pidfd_getfd, which needs
-            # CAP_SYS_PTRACE — not granted in typical containers).
+            # CUDA IPC (the default) needs non-expandable memory: its
+            # classic capability-free handle path does not work with
+            # expandable_segments (which forces pidfd_getfd, needing
+            # CAP_SYS_PTRACE — not granted in typical containers). The
+            # gloo fallback wants expandable_segments; the IPC default
+            # must *actively disable* it, because the driver env may
+            # carry expandable_segments:True (the colocate tests set it)
+            # and the trainer actor would otherwise inherit it.
             if not ipc_enabled():
                 env_vars.setdefault(
                     "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
@@ -121,6 +125,9 @@ class RayTrainGroup:
                 env_vars.setdefault(
                     "PYTORCH_ALLOC_CONF", "expandable_segments:True"
                 )
+            else:
+                env_vars["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
+                env_vars["PYTORCH_ALLOC_CONF"] = "expandable_segments:False"
 
         TrainRayActor = ray.remote(num_gpus=1, runtime_env={"env_vars": env_vars})(
             self._training_class

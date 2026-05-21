@@ -227,14 +227,23 @@ def _prepare_sgl_engines(
         # free cudaIpc* handle path, which only works on *non*-expandable
         # memory. expandable_segments forces the pidfd_getfd fd-passing
         # path, which needs CAP_SYS_PTRACE (not granted in typical
-        # containers). So skip expandable_segments while IPC is on — IPC
-        # already avoids the H<->D staging churn it was mitigating. Only
-        # the gloo fallback (TORCHSPEC_COLOCATE_IPC=0) injects it.
+        # containers). The gloo fallback (TORCHSPEC_COLOCATE_IPC=0) wants
+        # expandable_segments; the IPC default must *actively disable* it
+        # — the driver env may carry expandable_segments:True (the
+        # colocate tests set it) and the actor would otherwise inherit it,
+        # which makes CUDA IPC unusable and trips the ensure_ipc_usable
+        # fail-fast guard.
         if not ipc_enabled():
             env_vars = {
                 **env_vars,
                 "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
                 "PYTORCH_ALLOC_CONF": "expandable_segments:True",
+            }
+        else:
+            env_vars = {
+                **env_vars,
+                "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
+                "PYTORCH_ALLOC_CONF": "expandable_segments:False",
             }
         if not getattr(args, "colocate_mps_unavailable", False):
             env_vars.update(mps_client_env())
