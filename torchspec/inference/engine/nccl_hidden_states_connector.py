@@ -207,9 +207,7 @@ class NcclHiddenStatesConnector:
             RuntimeError: NCCL error from the underlying send.
         """
         if not tensors:
-            raise ValueError(
-                "NcclHiddenStatesConnector.send requires at least one tensor"
-            )
+            raise ValueError("NcclHiddenStatesConnector.send requires at least one tensor")
 
         names = sorted_tensor_names(tensors)
 
@@ -221,8 +219,9 @@ class NcclHiddenStatesConnector:
                 # Pipelined: copy into the send-buffer pool, ship the
                 # pooled handle, defer this step's ack by one step.
                 logger.debug(
-                    "NcclHiddenStatesConnector.send (cuda-ipc-pipeline): "
-                    "dst=%d names=%s", self._dst, names,
+                    "NcclHiddenStatesConnector.send (cuda-ipc-pipeline): dst=%d names=%s",
+                    self._dst,
+                    names,
                 )
                 self._pipeline.engine_send(tensors, self._dst, self._group)
                 return
@@ -230,7 +229,8 @@ class NcclHiddenStatesConnector:
             # trainer acks.
             logger.debug(
                 "NcclHiddenStatesConnector.send (cuda-ipc): dst=%d names=%s",
-                self._dst, names,
+                self._dst,
+                names,
             )
             ipc_send(tensors, self._dst, self._group)
             return
@@ -245,7 +245,8 @@ class NcclHiddenStatesConnector:
             # with the receiver's matching recv unambiguously.
             logger.debug(
                 "NcclHiddenStatesConnector.send (gloo): dst=%d names=%s",
-                self._dst, names,
+                self._dst,
+                names,
             )
             for tag, name in enumerate(names):
                 cpu_t = tensors[name].detach().to("cpu", copy=True).contiguous()
@@ -272,7 +273,8 @@ class NcclHiddenStatesConnector:
 
         logger.debug(
             "NcclHiddenStatesConnector.send: dst=%d names=%s",
-            self._dst, names,
+            self._dst,
+            names,
         )
         works = dist.batch_isend_irecv(ops)
         for work in works:
@@ -289,6 +291,7 @@ def export_transfer_mode_env(transfer_mode: str, paired_trainer_rank: int) -> No
     Mooncake".
     """
     import os
+
     os.environ[TRANSFER_MODE_ENV] = str(transfer_mode)
     os.environ[PAIRED_TRAINER_RANK_ENV] = str(int(paired_trainer_rank))
 
@@ -296,11 +299,13 @@ def export_transfer_mode_env(transfer_mode: str, paired_trainer_rank: int) -> No
 def read_transfer_mode_env() -> Optional[str]:
     """Inverse of :func:`export_transfer_mode_env`. Returns None if unset."""
     import os
+
     return os.environ.get(TRANSFER_MODE_ENV)
 
 
 def read_paired_trainer_rank_env() -> Optional[int]:
     """Read the paired trainer global rank, or None if unset."""
     import os
+
     val = os.environ.get(PAIRED_TRAINER_RANK_ENV)
     return int(val) if val is not None else None

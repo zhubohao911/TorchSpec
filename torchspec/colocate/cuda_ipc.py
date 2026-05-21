@@ -118,10 +118,7 @@ def ipc_pipeline_enabled() -> bool:
     """
     if not ipc_enabled():
         return False
-    return (
-        os.environ.get(_IPC_PIPELINE_ENV, "").strip().lower()
-        in _IPC_PIPELINE_ENABLE_VALUES
-    )
+    return os.environ.get(_IPC_PIPELINE_ENV, "").strip().lower() in _IPC_PIPELINE_ENABLE_VALUES
 
 
 def probe_ipc_capability() -> Tuple[bool, str]:
@@ -155,12 +152,15 @@ def probe_ipc_capability() -> Tuple[bool, str]:
             return _probe_cache
         for _ev in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF"):
             if "expandable_segments:true" in os.environ.get(_ev, "").lower():
-                _probe_cache = (False, (
-                    _ev + " enables expandable_segments, which forces CUDA "
-                    "IPC onto the pidfd_getfd path (needs CAP_SYS_PTRACE). "
-                    "Drop expandable_segments, or set TORCHSPEC_COLOCATE_IPC=0 "
-                    "for the gloo CPU-staged transport."
-                ))
+                _probe_cache = (
+                    False,
+                    (
+                        _ev + " enables expandable_segments, which forces CUDA "
+                        "IPC onto the pidfd_getfd path (needs CAP_SYS_PTRACE). "
+                        "Drop expandable_segments, or set TORCHSPEC_COLOCATE_IPC=0 "
+                        "for the gloo CPU-staged transport."
+                    ),
+                )
                 return _probe_cache
         _probe_cache = (True, "ok")
     except Exception as e:  # pragma: no cover - needs a real GPU
@@ -228,10 +228,7 @@ def ipc_send(
     for name in names:
         t = tensors[name].detach()
         if t.device.type != "cuda":
-            raise ValueError(
-                f"cuda_ipc.ipc_send requires CUDA tensors; '{name}' is on "
-                f"{t.device}"
-            )
+            raise ValueError(f"cuda_ipc.ipc_send requires CUDA tensors; '{name}' is on {t.device}")
         if not t.is_contiguous():
             t = t.contiguous()
         keepalive.append(t)
@@ -280,9 +277,7 @@ def ipc_recv(
     dist.recv(buf, src=src, group=group, tag=_IPC_DATA_TAG)
     payloads = pickle.loads(buf.numpy().tobytes())
     if not isinstance(payloads, list):
-        raise RuntimeError(
-            f"cuda_ipc.ipc_recv: expected a list payload, got {type(payloads)}"
-        )
+        raise RuntimeError(f"cuda_ipc.ipc_recv: expected a list payload, got {type(payloads)}")
 
     out: Dict[str, torch.Tensor] = {}
     aliases = []  # keep IPC aliases alive until the post-clone sync
@@ -302,8 +297,7 @@ def ipc_recv(
     got = set(out.keys())
     if expected != got:
         raise RuntimeError(
-            f"cuda_ipc.ipc_recv: key mismatch — expected {sorted(expected)}, "
-            f"got {sorted(got)}"
+            f"cuda_ipc.ipc_recv: key mismatch — expected {sorted(expected)}, got {sorted(got)}"
         )
 
     ack = torch.ones(1, dtype=torch.uint8)
@@ -347,8 +341,7 @@ def _send_pickle(obj, dst, group, len_tag: int, data_tag: int) -> None:
 
     blob = bytearray(pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL))
     buf = torch.frombuffer(blob, dtype=torch.uint8)
-    dist.send(torch.tensor([buf.numel()], dtype=torch.long),
-              dst=dst, group=group, tag=len_tag)
+    dist.send(torch.tensor([buf.numel()], dtype=torch.long), dst=dst, group=group, tag=len_tag)
     dist.send(buf, dst=dst, group=group, tag=data_tag)
 
 
@@ -419,26 +412,24 @@ class IpcPipelineTransport:
     def __init__(self, role: str):
         if role not in ("engine", "trainer"):
             raise ValueError(
-                f"IpcPipelineTransport role must be 'engine' or 'trainer', "
-                f"got {role!r}"
+                f"IpcPipelineTransport role must be 'engine' or 'trainer', got {role!r}"
             )
         self.role = role
         self._step = 0
         # -- engine-role state --------------------------------------------
-        self._pool: Dict[str, list] = {}        # name -> [K] flat CUDA buffers
-        self._pool_args: Dict[str, list] = {}   # name -> [K] reduce_tensor args
-        self._shipped: set = set()              # (name, slot) handles shipped
-        self._retired: list = []                # [(step, buf)] awaiting free
-        self._pending_ack = False               # a deferred ack is outstanding
+        self._pool: Dict[str, list] = {}  # name -> [K] flat CUDA buffers
+        self._pool_args: Dict[str, list] = {}  # name -> [K] reduce_tensor args
+        self._shipped: set = set()  # (name, slot) handles shipped
+        self._retired: list = []  # [(step, buf)] awaiting free
+        self._pending_ack = False  # a deferred ack is outstanding
         # -- trainer-role state -------------------------------------------
         self._mapping: Dict[tuple, "torch.Tensor"] = {}  # noqa: F821
-        self._ack_req = None                    # in-flight ack isend handle
-        self._ack_buf = None                    # tensor kept alive for the isend
+        self._ack_req = None  # in-flight ack isend handle
+        self._ack_buf = None  # tensor kept alive for the isend
 
     # -- engine ------------------------------------------------------------
 
-    def _ensure_slot(self, name: str, slot: int, numel: int, dtype,
-                     reduce_tensor) -> None:
+    def _ensure_slot(self, name: str, slot: int, numel: int, dtype, reduce_tensor) -> None:
         """Make ``pool[name][slot]`` exactly big enough for ``numel`` elements.
 
         Allocates on first use; on overflow reallocates to exactly
@@ -471,8 +462,12 @@ class IpcPipelineTransport:
         self._pool_args[name][slot] = reduce_tensor(new_buf)[1]
         self._shipped.discard((name, slot))
 
-    def engine_send(self, tensors: Dict[str, "torch.Tensor"],  # noqa: F821
-                    dst: int, group) -> None:
+    def engine_send(
+        self,
+        tensors: Dict[str, "torch.Tensor"],  # noqa: F821
+        dst: int,
+        group,
+    ) -> None:
         """Engine side: ship hidden-state tensors to ``dst`` (pipelined).
 
         Returns as soon as the handle message is on the wire — the ack of
@@ -488,9 +483,7 @@ class IpcPipelineTransport:
         if self.role != "engine":
             raise RuntimeError("engine_send called on a trainer-role transport")
         if not tensors:
-            raise ValueError(
-                "IpcPipelineTransport.engine_send requires at least one tensor"
-            )
+            raise ValueError("IpcPipelineTransport.engine_send requires at least one tensor")
 
         slot = self._step % _PIPELINE_SLOTS
         msg = []
@@ -498,8 +491,7 @@ class IpcPipelineTransport:
             t = tensors[name].detach()
             if t.device.type != "cuda":
                 raise ValueError(
-                    f"IpcPipelineTransport requires CUDA tensors; '{name}' is "
-                    f"on {t.device}"
+                    f"IpcPipelineTransport requires CUDA tensors; '{name}' is on {t.device}"
                 )
             flat = t.reshape(-1)
             numel = flat.numel()
@@ -533,8 +525,9 @@ class IpcPipelineTransport:
 
     # -- trainer -----------------------------------------------------------
 
-    def trainer_recv(self, tensor_specs: Dict[str, Tuple],
-                     src: int, device, group) -> Dict[str, "torch.Tensor"]:  # noqa: F821
+    def trainer_recv(
+        self, tensor_specs: Dict[str, Tuple], src: int, device, group
+    ) -> Dict[str, "torch.Tensor"]:  # noqa: F821
         """Trainer side: receive one step's tensors from ``src`` (pipelined).
 
         Opens each pooled IPC handle only on the first step that uses its
@@ -552,8 +545,7 @@ class IpcPipelineTransport:
         msg = _recv_pickle(src, group, _PIPE_LEN_TAG, _PIPE_DATA_TAG)
         if not isinstance(msg, list):
             raise RuntimeError(
-                f"IpcPipelineTransport.trainer_recv: expected a list payload, "
-                f"got {type(msg)}"
+                f"IpcPipelineTransport.trainer_recv: expected a list payload, got {type(msg)}"
             )
 
         out: Dict[str, torch.Tensor] = {}
@@ -590,9 +582,7 @@ class IpcPipelineTransport:
         if self._ack_req is not None:
             self._ack_req.wait()
         self._ack_buf = torch.ones(1, dtype=torch.uint8)
-        self._ack_req = dist.isend(
-            self._ack_buf, dst=src, group=group, tag=_PIPE_ACK_TAG
-        )
+        self._ack_req = dist.isend(self._ack_buf, dst=src, group=group, tag=_PIPE_ACK_TAG)
         self._step += 1
         return out
 

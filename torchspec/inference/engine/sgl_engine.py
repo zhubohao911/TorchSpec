@@ -175,9 +175,7 @@ class SglEngine(SglDecodeEngineMixin, InferenceEngine, RayActor):
             # At engine_tp_size==1 this is just `self.rank` — the
             # original 1:1 engine<->trainer pairing. The colocate.patch
             # adds tp_rank to this base per TP scheduler subprocess.
-            engine_tp_size = int(
-                getattr(self.args, "inference_num_gpus_per_engine", 1) or 1
-            )
+            engine_tp_size = int(getattr(self.args, "inference_num_gpus_per_engine", 1) or 1)
             paired_trainer_base = self.rank * engine_tp_size
             export_transfer_mode_env(
                 transfer_mode="nccl",
@@ -198,9 +196,7 @@ class SglEngine(SglDecodeEngineMixin, InferenceEngine, RayActor):
             ):
                 # Already set by Ray-driver inheritance in Modal sandbox;
                 # still log here so a multi-node failure has a paper trail.
-                logger.info(
-                    f"SglEngine rank {self.rank}: union env {var}={os.environ.get(var)!r}"
-                )
+                logger.info(f"SglEngine rank {self.rank}: union env {var}={os.environ.get(var)!r}")
             logger.info(
                 f"SglEngine rank {self.rank}: transfer_mode=nccl, "
                 f"paired_trainer_rank(base)={paired_trainer_base} "

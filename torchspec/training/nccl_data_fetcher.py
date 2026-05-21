@@ -42,7 +42,7 @@ lazy 2-rank sub-communicator pathology that bit Phase 3.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.distributed as dist
@@ -88,9 +88,7 @@ class NcclDataFetcher:
         clone_on_return: bool = True,
     ):
         if device.type != "cuda":
-            raise ValueError(
-                f"NcclDataFetcher requires a CUDA device; got device={device}"
-            )
+            raise ValueError(f"NcclDataFetcher requires a CUDA device; got device={device}")
 
         self._src_rank = int(src_rank)
         self._shape = tuple(shape)
@@ -107,7 +105,11 @@ class NcclDataFetcher:
         logger.debug(
             "NcclDataFetcher initialised: src_rank=%d shape=%s dtype=%s device=%s "
             "clone_on_return=%s",
-            self._src_rank, self._shape, self._dtype, self._device, self._clone,
+            self._src_rank,
+            self._shape,
+            self._dtype,
+            self._device,
+            self._clone,
         )
 
     @property
@@ -156,7 +158,7 @@ def make_dummy_tensor(
     n = 1
     for d in shape:
         n *= d
-    flat = (torch.arange(n, device=device, dtype=torch.float32) + float(seed))
+    flat = torch.arange(n, device=device, dtype=torch.float32) + float(seed)
     return flat.reshape(shape).to(dtype)
 
 
@@ -221,9 +223,7 @@ def _normalise_dtype(dtype: Any) -> torch.dtype:
         return dtype
     if isinstance(dtype, str):
         return getattr(torch, dtype.replace("torch.", ""))
-    raise TypeError(
-        f"unsupported tensor dtype representation: {dtype!r} (type={type(dtype)})"
-    )
+    raise TypeError(f"unsupported tensor dtype representation: {dtype!r} (type={type(dtype)})")
 
 
 def _group_is_gloo(group: Optional[dist.ProcessGroup]) -> bool:
@@ -279,9 +279,7 @@ class NcclMultiTensorFetcher:
                 "initialised (call init_union_world first)."
             )
         if device.type != "cuda":
-            raise ValueError(
-                f"NcclMultiTensorFetcher requires a CUDA device; got {device}"
-            )
+            raise ValueError(f"NcclMultiTensorFetcher requires a CUDA device; got {device}")
         self._src = int(src_global_rank)
         self._device = device
         self._group = group
@@ -339,15 +337,17 @@ class NcclMultiTensorFetcher:
                 # Pipelined: reuse the cached pool-buffer mapping, ack
                 # with a non-blocking isend.
                 logger.debug(
-                    "NcclMultiTensorFetcher.recv_step (cuda-ipc-pipeline): "
-                    "src=%d names=%s", self._src, names,
+                    "NcclMultiTensorFetcher.recv_step (cuda-ipc-pipeline): src=%d names=%s",
+                    self._src,
+                    names,
                 )
                 return self._pipeline.trainer_recv(
                     tensor_specs, self._src, self._device, self._group
                 )
             logger.debug(
                 "NcclMultiTensorFetcher.recv_step (cuda-ipc): src=%d names=%s",
-                self._src, names,
+                self._src,
+                names,
             )
             return ipc_recv(tensor_specs, self._src, self._device, self._group)
 
@@ -358,7 +358,8 @@ class NcclMultiTensorFetcher:
             # sender's per-tensor tag.
             logger.debug(
                 "NcclMultiTensorFetcher.recv_step (gloo): src=%d names=%s",
-                self._src, names,
+                self._src,
+                names,
             )
             out: Dict[str, torch.Tensor] = {}
             for tag, name in enumerate(names):
@@ -380,7 +381,8 @@ class NcclMultiTensorFetcher:
 
         logger.debug(
             "NcclMultiTensorFetcher.recv_step: src=%d names=%s",
-            self._src, names,
+            self._src,
+            names,
         )
         works = dist.batch_isend_irecv(ops)
         for work in works:
@@ -410,13 +412,9 @@ def send_step(
     for name in names:
         t = tensors[name]
         if not t.is_contiguous():
-            raise ValueError(
-                f"send_step requires contiguous tensors; got non-contiguous '{name}'"
-            )
+            raise ValueError(f"send_step requires contiguous tensors; got non-contiguous '{name}'")
         if t.device.type != "cuda":
-            raise ValueError(
-                f"send_step requires CUDA tensors; got '{name}' on {t.device}"
-            )
+            raise ValueError(f"send_step requires CUDA tensors; got '{name}' on {t.device}")
         ops.append(dist.P2POp(dist.isend, t, peer=int(dst_global_rank), group=group))
 
     works = dist.batch_isend_irecv(ops)

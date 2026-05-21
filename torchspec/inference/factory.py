@@ -100,7 +100,10 @@ def prepare_inference_engines(
         engines, init_refs = _prepare_hf_engines(args, inference_pg, mooncake_config, engine_group)
     elif engine_type == "sgl":
         engines, init_refs = _prepare_sgl_engines(
-            args, inference_pg, mooncake_config, engine_group,
+            args,
+            inference_pg,
+            mooncake_config,
+            engine_group,
             extra_env_vars=extra_env_vars,
         )
     else:
@@ -170,7 +173,10 @@ def _init_hf_engines(args, pg, mooncake_config=None, engine_group: int = 0) -> l
 
 
 def _prepare_sgl_engines(
-    args, pg, mooncake_config=None, engine_group: int = 0,
+    args,
+    pg,
+    mooncake_config=None,
+    engine_group: int = 0,
     extra_env_vars: dict | None = None,
 ) -> tuple[list, list]:
     """Create SGL engine actors and fire init calls without waiting.
