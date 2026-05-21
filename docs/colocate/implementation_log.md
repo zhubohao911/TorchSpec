@@ -2205,6 +2205,15 @@ path (including 200-step alloc-flatness and 50-step convergence, with
 `expandable_segments` off). The benchmark settles the *performance*
 question; that run settles the *stability* question.
 
+### Next: transport optimization
+
+[`transport_optimization.md`](transport_optimization.md) investigates
+whether the IPC transport needs a hand-written C++/CUDA or Triton kernel
+(it does not — the only kernel in the path is a bandwidth-saturated D→D
+copy) and lays out the protocol-level optimizations worth doing instead
+(send-buffer pool + handle cache, ack pipelining) with an A/B benchmark
+plan against the current implementation.
+
 ## Follow-up round 8 — v0.5.10.post1 full `--full` matrix + cutover (2026-05-21, RunPod 4×H100)
 
 Round 5 validated `v0.5.10.post1/colocate.patch` at tp=1 and
