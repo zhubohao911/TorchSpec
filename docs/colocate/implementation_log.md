@@ -2315,7 +2315,36 @@ pods** here — the CUDA-IPC-under-MPS interaction appears host/driver
 dependent. The non-destructive probe removes the destructive call
 outright, so it is strictly safer regardless.
 
-### Still pending
+### Second bug — expandable_segments inherited by the IPC engine
 
-The 4×H100 `--full` matrix re-run with CUDA IPC as the default + this
-fix (round 8's matrix ran at `4fce80d`, before IPC became the default).
+The first `--full` re-run surfaced one more bug. `test_colocate_tiny.py`
+sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` in the
+`train_entry` driver env; the engine actor **inherits** it, and CUDA IPC
+genuinely cannot use expandable_segments memory on a no-`CAP_SYS_PTRACE`
+container. The round-9 probe correctly rejected it (`ensure_ipc_usable`
+raised) — but `factory.py` / `train_group.py` only *skipped adding*
+expandable_segments for IPC actors; they did not *override* the
+inherited value. Fixed (`e62c941`): the IPC branch now
+actively sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False`.
+
+### `--full` re-validation — GREEN (2026-05-21, RunPod 4×H100)
+
+With both fixes, **13 colocate tests pass under CUDA IPC default**:
+`test_phase4_tiny_one_step`, `test_phase7_tiny_loss_decreases`,
+`test_phase4_one_step` (4-GPU / 4-engine Qwen3-8B), grad parity
+(determinism / full / vs-disagg), checkpoint save+resume,
+`test_colocate_ipc`, `test_colocate_tp2`, `test_colocate_multi_engine`,
+`test_phase6_peak_alloc_flatness` (200 steps), `test_phase7_convergence`
+(50 steps, loss 12.13 → 3.27). The one non-pass — `grad_parity_smoke`
+(Qwen3-8B) — was an HF-Hub `429` rate-limit on the unauthenticated model
+metadata fetch (environment, not a colocate defect; `test_phase4_one_step`
+already exercised 4-GPU Qwen3-8B under IPC). The Qwen0.6B tests were
+re-run with `HF_HUB_OFFLINE=1` against the warm model cache to dodge the
+same rate-limit.
+
+**Real-workload CUDA IPC performance:** a warm colocate step is ~0.18 s;
+the hidden-state transfer is ~1 % of that (round-7 benchmark: ~1–2 ms),
+so CUDA IPC is not a step-time factor. `peak_alloc` stayed flat to
+0.014 % over the 200-step stability test — the per-step IPC handle
+export/open does not leak. Detail in
+`docs/colocate/transport_benchmark.md`.

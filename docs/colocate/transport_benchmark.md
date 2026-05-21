@@ -104,3 +104,47 @@ iteration (so CUDA IPC pays a real `cudaIpcOpenMemHandle` each time).
 python scripts/colocate/bench_transport.py
 python scripts/colocate/bench_transport.py --iters 40 --warmup 8 --sizes-mb 1,16,256
 ```
+
+## Real-workload validation — `--full` run under CUDA IPC default (2026-05-21)
+
+The benchmark above measures the transport **in isolation** (and without
+MPS). This section records CUDA IPC's performance in the **real colocate
+loop** — the `run_smoke_host.sh --full` matrix on a RunPod 4×H100, with
+CUDA IPC as the default transport (after the round-9 probe fix). 13
+colocate tests passed; per-step metrics are the driver's
+`[colocate_loop] step=… step_time=… loss=… peak_alloc=…` log.
+
+### Per-step time (CUDA IPC default)
+
+| Test | Config | Step 1 (cold) | Warm steps | Warm throughput |
+|---|---|--:|--:|--:|
+| `test_phase7_convergence` | ~25.8 GB-class, 50 steps | 42.8 s | **~0.18 s** (0.16–0.20 s) | ~5.3–5.5 step/s |
+| `test_phase6_peak_alloc_flatness` | ~25.8 GB-class, 200 steps | — | **~0.177 s** (0.16–0.19 s) | ~5.5 step/s |
+| `test_colocate_tiny` (Qwen3-0.6B) | ~5.2 GB, tiny | 13–50 s | **~0.10–0.16 s** | — |
+
+Step 1 is a one-time cold start (sglang engine warm-up + first
+`generate()` + MPS/CUDA init) — **not** transport-related and identical
+under gloo. Warm steps are the steady state.
+
+### Two findings
+
+- **The transport is invisible in the step budget.** A warm colocate
+  step is ~0.18 s; the round-7 benchmark puts a CUDA IPC hidden-state
+  transfer at ~1–2 ms — i.e. **~1 % of the step**. CUDA IPC is not a
+  step-time factor. (gloo, at ~300 ms for the same payload, *would* be —
+  it would more than double the step.)
+- **No memory leak from the per-step IPC handles.** Over the 200-step
+  stability test, `peak_alloc` stayed within
+  25 754 027 520 – 25 757 765 120 B — a **0.014 %** spread on a 25.75 GB
+  footprint. CUDA IPC exports/opens a fresh handle every step; that
+  churn does not accumulate.
+
+Convergence is correct under CUDA IPC — loss decreases monotonically
+(`test_phase7_convergence`: 12.13 → 3.27 over 50 steps; the tiny test:
+12.02 → 9.74 over 20) — confirming the transport delivers correct
+hidden states in the real loop, not just in the byte-equality benchmark.
+
+> Round 9 found and fixed the bug that made CUDA IPC unusable as the
+> default (a destructive capability probe wedged CUDA under MPS — see
+> `implementation_log.md`). These numbers are from the post-fix
+> re-validation.
