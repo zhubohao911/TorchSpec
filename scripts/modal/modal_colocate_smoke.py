@@ -62,12 +62,8 @@ DEFAULT_GPU = "H100:4"
 
 app = modal.App("torchspec-colocate-smoke")
 
-hf_cache_vol = modal.Volume.from_name(
-    "torchspec-colocate-hf-cache", create_if_missing=True
-)
-outputs_vol = modal.Volume.from_name(
-    "torchspec-colocate-outputs", create_if_missing=True
-)
+hf_cache_vol = modal.Volume.from_name("torchspec-colocate-hf-cache", create_if_missing=True)
+outputs_vol = modal.Volume.from_name("torchspec-colocate-outputs", create_if_missing=True)
 
 # =============================================================================
 # Container image — shared by every phase.
@@ -76,20 +72,24 @@ outputs_vol = modal.Volume.from_name(
 # =============================================================================
 
 base_image = (
-    modal.Image.from_registry(
-        "nvidia/cuda:12.4.0-devel-ubuntu22.04", add_python="3.11"
-    )
+    modal.Image.from_registry("nvidia/cuda:12.4.0-devel-ubuntu22.04", add_python="3.11")
     .apt_install(
-        "git", "vim", "htop",
+        "git",
+        "vim",
+        "htop",
         # RDMA libs — required by Mooncake (used by the disaggregated baseline
         # we run in Phase 7's control arm).
-        "libibverbs-dev", "librdmacm-dev", "libnuma-dev",
+        "libibverbs-dev",
+        "librdmacm-dev",
+        "libnuma-dev",
         "libcurl4-openssl-dev",
         # MPS daemon ships with the CUDA toolkit base image, so no extra apt
         # package is needed for `nvidia-cuda-mps-control`.
     )
     .pip_install(
-        "torch", "torchvision", "torchaudio",
+        "torch",
+        "torchvision",
+        "torchaudio",
         extra_index_url="https://download.pytorch.org/whl/cu124",
     )
     .run_commands(
@@ -126,15 +126,14 @@ base_image = (
     # Mooncake binary perms (mirrors Dockerfile.runpod Layer 6 from the
     # dflash branch).
     .run_commands(
-        "MOONCAKE_DIR=$(python3 -c \"import mooncake, os; "
-        "print(os.path.dirname(mooncake.__file__))\") && "
-        "chmod 755 \"$MOONCAKE_DIR/mooncake_master\" 2>/dev/null || true && "
+        'MOONCAKE_DIR=$(python3 -c "import mooncake, os; '
+        'print(os.path.dirname(mooncake.__file__))") && '
+        'chmod 755 "$MOONCAKE_DIR/mooncake_master" 2>/dev/null || true && '
         "sed -i 's/os.chmod(bin_path, 0o755)/pass/' "
-        "\"$MOONCAKE_DIR/cli.py\" 2>/dev/null || true",
+        '"$MOONCAKE_DIR/cli.py" 2>/dev/null || true',
     )
     .run_commands(
-        "mkdir -p /root/.cache && "
-        "ln -sf /root/.cache/huggingface /root/.cache/huggingface || true",
+        "mkdir -p /root/.cache && ln -sf /root/.cache/huggingface /root/.cache/huggingface || true",
     )
     .env(
         {
@@ -217,9 +216,7 @@ def _gpu_banner() -> int:
     for i in range(detected):
         name = torch.cuda.get_device_name(i)
         props = torch.cuda.get_device_properties(i)
-        mem_gb = (
-            getattr(props, "total_memory", getattr(props, "total_mem", 0)) / 1e9
-        )
+        mem_gb = getattr(props, "total_memory", getattr(props, "total_mem", 0)) / 1e9
         print(f"    GPU {i}: {name} ({mem_gb:.1f} GB)")
     return detected
 
@@ -502,9 +499,11 @@ def _run_probe():
     )  # `-V` is a noop in some builds; we just want the binary to be present
     print("\n  --- python imports ---")
     import torch
+
     print(f"  torch {torch.__version__}")
     try:
         import sglang  # noqa: F401
+
         print("  sglang OK")
     except Exception as e:
         print(f"  sglang import failed: {e}")
@@ -556,17 +555,15 @@ def _run_probe():
 
     from sglang.srt.managers import scheduler_output_processor_mixin as som
 
-    assert hasattr(
-        som.SchedulerOutputProcessorMixin, "_send_hidden_states_to_nccl"
-    ), "_send_hidden_states_to_nccl missing — output processor mixin not patched"
+    assert hasattr(som.SchedulerOutputProcessorMixin, "_send_hidden_states_to_nccl"), (
+        "_send_hidden_states_to_nccl missing — output processor mixin not patched"
+    )
     print("  scheduler_output_processor_mixin._send_hidden_states_to_nccl present")
 
     from sglang.srt.managers import scheduler as sc
 
     src = inspect.getsource(sc.Scheduler.__init__)
-    assert "eagle_nccl_writer" in src, (
-        "eagle_nccl_writer init missing — scheduler.py not patched"
-    )
+    assert "eagle_nccl_writer" in src, "eagle_nccl_writer init missing — scheduler.py not patched"
     assert "is_colocate_active" in src or "torchspec_colocate" in src, (
         "torchspec_colocate import missing in Scheduler.__init__"
     )

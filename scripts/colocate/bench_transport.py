@@ -62,17 +62,17 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-import torch
-import torch.distributed as dist
-import torch.multiprocessing as mp
-from torch.multiprocessing.reductions import rebuild_cuda_tensor, reduce_tensor
-
 # Load torchspec/colocate/cuda_ipc.py directly by file path. cuda_ipc.py
 # has no torchspec-internal imports, so loading it standalone avoids
 # triggering torchspec's package __init__ chain (which pulls heavy model
 # deps). The benchmark then runs on a bare torch install — no
 # `pip install -e .` needed on the GPU host.
 import importlib.util as _ilu
+
+import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.multiprocessing.reductions import rebuild_cuda_tensor, reduce_tensor
 
 _CUDA_IPC_PATH = _REPO_ROOT / "torchspec" / "colocate" / "cuda_ipc.py"
 _spec = _ilu.spec_from_file_location("colocate_cuda_ipc", _CUDA_IPC_PATH)
@@ -99,11 +99,11 @@ _POOL_ACK_TAG = 9202
 # Mirrors cuda_ipc.py's framing: send_object_list / recv_object_list were
 # observed to deadlock on this group, so we pickle + frame ourselves.
 
+
 def _send_blob(obj, dst, group, len_tag, data_tag) -> None:
     blob = bytearray(pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL))
     buf = torch.frombuffer(blob, dtype=torch.uint8)
-    dist.send(torch.tensor([buf.numel()], dtype=torch.long),
-              dst=dst, group=group, tag=len_tag)
+    dist.send(torch.tensor([buf.numel()], dtype=torch.long), dst=dst, group=group, tag=len_tag)
     dist.send(buf, dst=dst, group=group, tag=data_tag)
 
 
@@ -154,8 +154,7 @@ class GlooTransport(Transport):
 
     def engine_send(self, payload, dst, group):
         t = time.perf_counter()
-        cpu = [payload[n].detach().to("cpu", copy=True).contiguous()
-               for n in sorted(payload)]
+        cpu = [payload[n].detach().to("cpu", copy=True).contiguous() for n in sorted(payload)]
         self._stage("gloo.engine D->H copy", time.perf_counter() - t)
         t = time.perf_counter()
         for tag, ct in enumerate(cpu):
@@ -215,10 +214,10 @@ class IpcPoolTransport(Transport):
 
     def __init__(self):
         super().__init__()
-        self._pool = None       # engine: {name: [buf] * n_slots}
+        self._pool = None  # engine: {name: [buf] * n_slots}
         self._pool_args = None  # engine: {name: [reduce_args] * n_slots}
         self._step = 0
-        self._mapping = {}      # trainer: {(name, slot): alias tensor}
+        self._mapping = {}  # trainer: {(name, slot): alias tensor}
 
     # -- engine ------------------------------------------------------------
 
@@ -227,8 +226,7 @@ class IpcPoolTransport(Transport):
             return
         self._pool, self._pool_args = {}, {}
         for name, t in payload.items():
-            bufs = [torch.empty_like(t.detach().contiguous())
-                    for _ in range(self.n_slots)]
+            bufs = [torch.empty_like(t.detach().contiguous()) for _ in range(self.n_slots)]
             self._pool[name] = bufs
             # reduce_tensor once per persistent buffer — the IPC handle
             # is stable for the buffer's lifetime, so cache the args.
@@ -246,8 +244,10 @@ class IpcPoolTransport(Transport):
         self._stage(f"{self.name}.engine pool copy", time.perf_counter() - t)
 
         t = time.perf_counter()
-        msg = [(name, slot, (self._pool_args[name][slot] if first_use else None))
-               for name in sorted(payload)]
+        msg = [
+            (name, slot, (self._pool_args[name][slot] if first_use else None))
+            for name in sorted(payload)
+        ]
         _send_blob(msg, dst, group, _POOL_LEN_TAG, _POOL_DATA_TAG)
         self._stage(f"{self.name}.engine ship", time.perf_counter() - t)
 
@@ -273,15 +273,12 @@ class IpcPoolTransport(Transport):
             key = (name, slot)
             if key not in self._mapping:
                 if args is None:
-                    raise RuntimeError(
-                        f"{self.name}: no IPC handle for uncached slot {key}")
+                    raise RuntimeError(f"{self.name}: no IPC handle for uncached slot {key}")
                 self._mapping[key] = rebuild_cuda_tensor(*args)
-        self._stage(f"{self.name}.trainer handle open",
-                    time.perf_counter() - t)
+        self._stage(f"{self.name}.trainer handle open", time.perf_counter() - t)
 
         t = time.perf_counter()
-        out = {name: self._mapping[(name, slot)].to(device, copy=True)
-               for name, slot, _a in msg}
+        out = {name: self._mapping[(name, slot)].to(device, copy=True) for name, slot, _a in msg}
         torch.cuda.synchronize()
         self._stage(f"{self.name}.trainer D->D copy", time.perf_counter() - t)
 
@@ -290,8 +287,7 @@ class IpcPoolTransport(Transport):
 
     def _send_ack(self, src, group):
         """ipc-pool acks synchronously. ipc-pipe overrides with isend."""
-        dist.send(torch.ones(1, dtype=torch.uint8),
-                  dst=src, group=group, tag=_POOL_ACK_TAG)
+        dist.send(torch.ones(1, dtype=torch.uint8), dst=src, group=group, tag=_POOL_ACK_TAG)
 
 
 class IpcPipeTransport(IpcPoolTransport):
@@ -308,9 +304,9 @@ class IpcPipeTransport(IpcPoolTransport):
 
     def __init__(self):
         super().__init__()
-        self._pending = False       # engine: an ack is outstanding
-        self._ack_req = None        # trainer: in-flight isend handle
-        self._ack_buf = None        # trainer: tensor kept alive for isend
+        self._pending = False  # engine: an ack is outstanding
+        self._ack_req = None  # trainer: in-flight isend handle
+        self._ack_buf = None  # trainer: tensor kept alive for isend
 
     def _wait_ack(self, dst, group):
         # Deferred: collect the *previous* step's ack, not this one.
@@ -318,8 +314,7 @@ class IpcPipeTransport(IpcPoolTransport):
         if self._pending:
             ack = torch.zeros(1, dtype=torch.uint8)
             dist.recv(ack, src=dst, group=group, tag=_POOL_ACK_TAG)
-        self._stage(f"{self.name}.engine ack wait (deferred)",
-                    time.perf_counter() - t)
+        self._stage(f"{self.name}.engine ack wait (deferred)", time.perf_counter() - t)
         self._pending = True
 
     def _send_ack(self, src, group):
@@ -327,8 +322,7 @@ class IpcPipeTransport(IpcPoolTransport):
         if self._ack_req is not None:
             self._ack_req.wait()  # previous isend must be consumed first
         self._ack_buf = torch.ones(1, dtype=torch.uint8)
-        self._ack_req = dist.isend(self._ack_buf, dst=src, group=group,
-                                   tag=_POOL_ACK_TAG)
+        self._ack_req = dist.isend(self._ack_buf, dst=src, group=group, tag=_POOL_ACK_TAG)
 
     def flush(self, peer, group, is_engine):
         if is_engine:
@@ -354,6 +348,7 @@ def _make_transport(arm: str) -> Transport:
 # ---------------------------------------------------------------------------
 # Payloads
 # ---------------------------------------------------------------------------
+
 
 def _single_tensor_spec(mb: float) -> dict:
     """One 2-D bf16 tensor of approximately ``mb`` megabytes."""
@@ -406,6 +401,7 @@ def _make_payload(spec: dict, device, seed: int, deterministic: bool = False) ->
 # Timing
 # ---------------------------------------------------------------------------
 
+
 def _stats(samples_s: list) -> dict:
     """mean / p50 / p99 / min in milliseconds from a list of seconds."""
     ms = sorted(s * 1e3 for s in samples_s)
@@ -419,8 +415,9 @@ def _stats(samples_s: list) -> dict:
     }
 
 
-def _bench_transport(transport, spec, *, iters, warmup, rank, device, group,
-                     engine_step_ms) -> dict:
+def _bench_transport(
+    transport, spec, *, iters, warmup, rank, device, group, engine_step_ms
+) -> dict:
     """Time one transport arm on one payload.
 
     Returns per-iteration ``span`` (barrier-to-barrier end-to-end) and
@@ -436,9 +433,12 @@ def _bench_transport(transport, spec, *, iters, warmup, rank, device, group,
         if i == warmup:
             transport.stages.clear()
 
-        deterministic = (i == 0)
-        payload = (_make_payload(spec, device, seed=i, deterministic=deterministic)
-                   if rank == ENGINE_RANK else None)
+        deterministic = i == 0
+        payload = (
+            _make_payload(spec, device, seed=i, deterministic=deterministic)
+            if rank == ENGINE_RANK
+            else None
+        )
         torch.cuda.synchronize()
         dist.barrier(group)
 
@@ -457,7 +457,8 @@ def _bench_transport(transport, spec, *, iters, warmup, rank, device, group,
                     if not torch.equal(got[name], ref[name]):
                         raise RuntimeError(
                             f"{transport.name}: byte mismatch on '{name}' "
-                            f"— transport is incorrect, timings void")
+                            f"— transport is incorrect, timings void"
+                        )
         dist.barrier(group)
         t1 = time.perf_counter()
 
@@ -474,13 +475,13 @@ def _bench_transport(transport, spec, *, iters, warmup, rank, device, group,
     dist.barrier(group)
 
     stages = {k: sum(v) / len(v) * 1e3 for k, v in transport.stages.items()}
-    return {"transport": transport.name, "span": spans, "own": own,
-            "stages": stages}
+    return {"transport": transport.name, "span": spans, "own": own, "stages": stages}
 
 
 # ---------------------------------------------------------------------------
 # Per-stage breakdown — gloo + ipc baseline (instrumented replicas)
 # ---------------------------------------------------------------------------
+
 
 def _breakdown(spec, *, iters, rank, device, group) -> dict:
     """Stage-by-stage anatomy of the plain gloo + ipc transports.
@@ -505,8 +506,7 @@ def _breakdown(spec, *, iters, rank, device, group) -> dict:
             cpu_tensors = []
             t = time.perf_counter()
             for name in names:
-                cpu_tensors.append(
-                    payload[name].detach().to("cpu", copy=True).contiguous())
+                cpu_tensors.append(payload[name].detach().to("cpu", copy=True).contiguous())
             add("gloo.engine D->H copy", time.perf_counter() - t)
             t = time.perf_counter()
             for tag, ct in enumerate(cpu_tensors):
@@ -542,8 +542,12 @@ def _breakdown(spec, *, iters, rank, device, group) -> dict:
             t = time.perf_counter()
             blob = pickle.dumps(args_list, protocol=pickle.HIGHEST_PROTOCOL)
             buf = torch.frombuffer(bytearray(blob), dtype=torch.uint8)
-            dist.send(torch.tensor([buf.numel()], dtype=torch.long),
-                      dst=TRAINER_RANK, group=group, tag=_BREAKDOWN_TAG)
+            dist.send(
+                torch.tensor([buf.numel()], dtype=torch.long),
+                dst=TRAINER_RANK,
+                group=group,
+                tag=_BREAKDOWN_TAG,
+            )
             dist.send(buf, dst=TRAINER_RANK, group=group, tag=_BREAKDOWN_TAG + 1)
             add("ipc.engine ship handles", time.perf_counter() - t)
             t = time.perf_counter()
@@ -564,8 +568,12 @@ def _breakdown(spec, *, iters, rank, device, group) -> dict:
             torch.cuda.synchronize()
             add("ipc.trainer D->D copy", time.perf_counter() - t)
             del aliases, cloned
-            dist.send(torch.ones(1, dtype=torch.uint8),
-                      dst=ENGINE_RANK, group=group, tag=_BREAKDOWN_TAG + 2)
+            dist.send(
+                torch.ones(1, dtype=torch.uint8),
+                dst=ENGINE_RANK,
+                group=group,
+                tag=_BREAKDOWN_TAG + 2,
+            )
 
     return {stage: sum(v) / len(v) * 1e3 for stage, v in acc.items()}
 
@@ -573,6 +581,7 @@ def _breakdown(spec, *, iters, rank, device, group) -> dict:
 # ---------------------------------------------------------------------------
 # Worker
 # ---------------------------------------------------------------------------
+
 
 def _worker(rank, world_size, port, argsd, result_path):
     os.environ["MASTER_ADDR"] = "127.0.0.1"
@@ -592,9 +601,16 @@ def _worker(rank, world_size, port, argsd, result_path):
         per_arm = {}
         for arm in arms:
             transport = _make_transport(arm)
-            res = _bench_transport(transport, spec, iters=iters, warmup=warmup,
-                                   rank=rank, device=device, group=group,
-                                   engine_step_ms=engine_step_ms)
+            res = _bench_transport(
+                transport,
+                spec,
+                iters=iters,
+                warmup=warmup,
+                rank=rank,
+                device=device,
+                group=group,
+                engine_step_ms=engine_step_ms,
+            )
             gathered = [None, None]
             dist.all_gather_object(gathered, res)
             per_arm[arm] = gathered
@@ -603,8 +619,7 @@ def _worker(rank, world_size, port, argsd, result_path):
 
     # gloo + ipc stage anatomy on the largest payload (the clearest).
     big_label, big_spec = max(payloads, key=lambda ls: _spec_bytes(ls[1]))
-    bd = _breakdown(big_spec, iters=max(8, warmup), rank=rank,
-                    device=device, group=group)
+    bd = _breakdown(big_spec, iters=max(8, warmup), rank=rank, device=device, group=group)
     bd_gathered = [None, None]
     dist.all_gather_object(bd_gathered, bd)
 
@@ -612,9 +627,14 @@ def _worker(rank, world_size, port, argsd, result_path):
         merged_bd = {}
         for d in bd_gathered:
             merged_bd.update(d)
-        report = _build_report(results, (big_label, big_spec, merged_bd),
-                               arms=arms, iters=iters, warmup=warmup,
-                               engine_step_ms=engine_step_ms)
+        report = _build_report(
+            results,
+            (big_label, big_spec, merged_bd),
+            arms=arms,
+            iters=iters,
+            warmup=warmup,
+            engine_step_ms=engine_step_ms,
+        )
         Path(result_path).write_text(report)
         print(report)
 
@@ -625,6 +645,7 @@ def _worker(rank, world_size, port, argsd, result_path):
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
+
 
 def _fmt_mb(nbytes: int) -> str:
     mb = nbytes / (1024 * 1024)
@@ -646,27 +667,30 @@ def _build_report(results, breakdown, *, arms, iters, warmup, engine_step_ms) ->
     L = []
     L.append("# Colocate transport optimization benchmark — IPC variants")
     L.append("")
-    L.append(f"- GPU: **{gpu}**  ·  torch {torch.__version__}  ·  "
-             f"CUDA {torch.version.cuda}")
+    L.append(f"- GPU: **{gpu}**  ·  torch {torch.__version__}  ·  CUDA {torch.version.cuda}")
     L.append(f"- Host: {platform.platform()}  ·  MPS active: {mps}")
-    L.append(f"- Method: 2 processes on GPU 0, 2-rank gloo group; "
-             f"{warmup} warmup + {iters} measured iters; fresh payload "
-             f"allocated every iter.")
-    L.append(f"- Arms: {', '.join(arms)}  ·  inter-step engine pacing: "
-             f"{engine_step_ms} ms")
-    L.append("- **cold** = iteration 0 (pays one-time `cudaIpcOpenMemHandle`); "
-             "**warm** = mean of the measured iterations (steady state).")
-    L.append("- Every arm passed an iteration-0 byte-equality check "
-             "(else the run aborts).")
+    L.append(
+        f"- Method: 2 processes on GPU 0, 2-rank gloo group; "
+        f"{warmup} warmup + {iters} measured iters; fresh payload "
+        f"allocated every iter."
+    )
+    L.append(f"- Arms: {', '.join(arms)}  ·  inter-step engine pacing: {engine_step_ms} ms")
+    L.append(
+        "- **cold** = iteration 0 (pays one-time `cudaIpcOpenMemHandle`); "
+        "**warm** = mean of the measured iterations (steady state)."
+    )
+    L.append("- Every arm passed an iteration-0 byte-equality check (else the run aborts).")
     L.append("")
 
     # -- Table A: end-to-end span ------------------------------------------
     L.append("## End-to-end transfer latency (warm mean, ms)")
     L.append("")
-    L.append("Barrier-to-barrier; both ranks see the same window. "
-             "Ack pipelining does **not** shrink this number (the barrier "
-             "forces the full round-trip into the window) — its win shows "
-             "in the engine-send table below.")
+    L.append(
+        "Barrier-to-barrier; both ranks see the same window. "
+        "Ack pipelining does **not** shrink this number (the barrier "
+        "forces the full round-trip into the window) — its win shows "
+        "in the engine-send table below."
+    )
     L.append("")
     L.append("| Payload | Size | " + " | ".join(arms) + " |")
     L.append("|---|--:|" + "--:|" * len(arms))
@@ -682,9 +706,11 @@ def _build_report(results, breakdown, *, arms, iters, warmup, engine_step_ms) ->
     # -- Table B: engine send own-call ------------------------------------
     L.append("## Engine `send()` own-call duration (warm mean, ms)")
     L.append("")
-    L.append("The colocate-loop stall: how long the engine is blocked "
-             "inside the transfer before it can resume. This is the metric "
-             "ack pipelining targets.")
+    L.append(
+        "The colocate-loop stall: how long the engine is blocked "
+        "inside the transfer before it can resume. This is the metric "
+        "ack pipelining targets."
+    )
     L.append("")
     has_ab = "ipc" in arms and "ipc-pipe" in arms
     hdr = "| Payload | " + " | ".join(arms) + " |"
@@ -727,25 +753,31 @@ def _build_report(results, breakdown, *, arms, iters, warmup, engine_step_ms) ->
     elabel, espec, eper = eagle
     L.append(f"## Cold vs warm — {elabel} ({_fmt_mb(_spec_bytes(espec))})")
     L.append("")
-    L.append("Cold is iteration 0. A large cold→warm drop means the arm "
-             "amortizes a one-time cost (the `cudaIpcOpenMemHandle` the "
-             "pool/cache arms pay once); a flat arm re-pays it every step.")
+    L.append(
+        "Cold is iteration 0. A large cold→warm drop means the arm "
+        "amortizes a one-time cost (the `cudaIpcOpenMemHandle` the "
+        "pool/cache arms pay once); a flat arm re-pays it every step."
+    )
     L.append("")
     L.append("| Arm | engine cold | engine warm | trainer cold | trainer warm |")
     L.append("|---|--:|--:|--:|--:|")
     for arm in arms:
         eng = eper[arm][ENGINE_RANK]["own"]
         tr = eper[arm][TRAINER_RANK]["own"]
-        L.append(f"| {arm} | {eng[0]*1e3:.3f} ms "
-                 f"| {_warm(eng, warmup)['mean']:.3f} ms "
-                 f"| {tr[0]*1e3:.3f} ms "
-                 f"| {_warm(tr, warmup)['mean']:.3f} ms |")
+        L.append(
+            f"| {arm} | {eng[0] * 1e3:.3f} ms "
+            f"| {_warm(eng, warmup)['mean']:.3f} ms "
+            f"| {tr[0] * 1e3:.3f} ms "
+            f"| {_warm(tr, warmup)['mean']:.3f} ms |"
+        )
     L.append("")
 
     # -- Table E: gloo + ipc stage anatomy --------------------------------
     big_label, big_spec, bd = breakdown
-    L.append(f"## Stage anatomy — gloo + ipc baseline — {big_label} "
-             f"({_fmt_mb(_spec_bytes(big_spec))}, mean ms)")
+    L.append(
+        f"## Stage anatomy — gloo + ipc baseline — {big_label} "
+        f"({_fmt_mb(_spec_bytes(big_spec))}, mean ms)"
+    )
     L.append("")
     L.append("| Stage | Time |")
     L.append("|---|--:|")
@@ -756,8 +788,7 @@ def _build_report(results, breakdown, *, arms, iters, warmup, engine_step_ms) ->
     # -- Table F: pool / pipe stage anatomy (warm, self-instrumented) -----
     opt_arms = [a for a in arms if a in ("gloo", "ipc-pool", "ipc-pipe")]
     if opt_arms:
-        L.append(f"## Stage anatomy — optimization arms — {elabel} "
-                 f"(warm mean ms)")
+        L.append(f"## Stage anatomy — optimization arms — {elabel} (warm mean ms)")
         L.append("")
         L.append("| Arm | Stage | Time |")
         L.append("|---|---|--:|")
@@ -769,8 +800,10 @@ def _build_report(results, breakdown, *, arms, iters, warmup, engine_step_ms) ->
                 L.append(f"| {arm} | `{stage}` | {merged[stage]:.3f} ms |")
         L.append("")
 
-    L.append("> See `docs/colocate/transport_optimization.md` for the "
-             "design of each arm and how to read these tables.")
+    L.append(
+        "> See `docs/colocate/transport_optimization.md` for the "
+        "design of each arm and how to read these tables."
+    )
     L.append("")
     return "\n".join(L)
 
@@ -779,38 +812,56 @@ def _build_report(results, breakdown, *, arms, iters, warmup, engine_step_ms) ->
 # main
 # ---------------------------------------------------------------------------
 
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--arms", default=",".join(ALL_ARMS),
-                    help=f"comma-separated transport arms ({', '.join(ALL_ARMS)})")
-    ap.add_argument("--iters", type=int, default=30,
-                    help="measured iterations per arm per payload")
-    ap.add_argument("--warmup", type=int, default=5,
-                    help="warmup iterations (>=2 so ipc-pipe primes both slots)")
-    ap.add_argument("--sizes-mb", default="0.25,1,4,16,64,256",
-                    help="comma-separated single-tensor payload sizes in MB")
-    ap.add_argument("--tokens", type=int, default=4096,
-                    help="Eagle3 multi-tensor case: number of tokens (B*S)")
-    ap.add_argument("--hidden", type=int, default=4096,
-                    help="Eagle3 multi-tensor case: hidden dim")
-    ap.add_argument("--engine-step-ms", type=float, default=0.0,
-                    help="inter-step engine pacing (stand-in for generate()); "
-                         "outside the measured window")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--arms",
+        default=",".join(ALL_ARMS),
+        help=f"comma-separated transport arms ({', '.join(ALL_ARMS)})",
+    )
+    ap.add_argument("--iters", type=int, default=30, help="measured iterations per arm per payload")
+    ap.add_argument(
+        "--warmup",
+        type=int,
+        default=5,
+        help="warmup iterations (>=2 so ipc-pipe primes both slots)",
+    )
+    ap.add_argument(
+        "--sizes-mb",
+        default="0.25,1,4,16,64,256",
+        help="comma-separated single-tensor payload sizes in MB",
+    )
+    ap.add_argument(
+        "--tokens", type=int, default=4096, help="Eagle3 multi-tensor case: number of tokens (B*S)"
+    )
+    ap.add_argument("--hidden", type=int, default=4096, help="Eagle3 multi-tensor case: hidden dim")
+    ap.add_argument(
+        "--engine-step-ms",
+        type=float,
+        default=0.0,
+        help="inter-step engine pacing (stand-in for generate()); outside the measured window",
+    )
     ap.add_argument("--port", type=int, default=29555, help="rendezvous port")
-    ap.add_argument("--out", default=str(_REPO_ROOT / "colocate-transport-bench.md"),
-                    help="Markdown report output path")
+    ap.add_argument(
+        "--out",
+        default=str(_REPO_ROOT / "colocate-transport-bench.md"),
+        help="Markdown report output path",
+    )
     args = ap.parse_args()
 
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
     bad = [a for a in arms if a not in ALL_ARMS]
     if bad:
-        print(f"ERROR: unknown arm(s) {bad}; valid: {', '.join(ALL_ARMS)}",
-              file=sys.stderr)
+        print(f"ERROR: unknown arm(s) {bad}; valid: {', '.join(ALL_ARMS)}", file=sys.stderr)
         return 2
     if args.warmup < 2 and "ipc-pipe" in arms:
-        print("ERROR: --warmup must be >=2 when ipc-pipe is selected "
-              "(it primes 2 pool slots).", file=sys.stderr)
+        print(
+            "ERROR: --warmup must be >=2 when ipc-pipe is selected (it primes 2 pool slots).",
+            file=sys.stderr,
+        )
         return 2
 
     if not torch.cuda.is_available():
@@ -818,19 +869,36 @@ def main() -> int:
         return 2
     for ev in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF"):
         if "expandable" in os.environ.get(ev, ""):
-            print(f"WARNING: {ev}={os.environ[ev]!r} — CUDA IPC needs plain "
-                  f"cudaMalloc memory and will fail. Unset it.", file=sys.stderr)
+            print(
+                f"WARNING: {ev}={os.environ[ev]!r} — CUDA IPC needs plain "
+                f"cudaMalloc memory and will fail. Unset it.",
+                file=sys.stderr,
+            )
 
-    payloads = [(f"single {s.strip()} MB", _single_tensor_spec(float(s)))
-                for s in args.sizes_mb.split(",") if s.strip()]
-    payloads.append((f"Eagle3 ({args.tokens}t × {args.hidden}h, 3 tensors)",
-                     _eagle3_spec(args.tokens, args.hidden)))
+    payloads = [
+        (f"single {s.strip()} MB", _single_tensor_spec(float(s)))
+        for s in args.sizes_mb.split(",")
+        if s.strip()
+    ]
+    payloads.append(
+        (
+            f"Eagle3 ({args.tokens}t × {args.hidden}h, 3 tensors)",
+            _eagle3_spec(args.tokens, args.hidden),
+        )
+    )
 
-    argsd = {"iters": args.iters, "warmup": args.warmup, "payloads": payloads,
-             "arms": arms, "engine_step_ms": args.engine_step_ms}
-    print(f"Benchmarking arms [{', '.join(arms)}] over {len(payloads)} "
-          f"payloads, {args.warmup}+{args.iters} iters each, on "
-          f"{torch.cuda.get_device_name(0)} …\n")
+    argsd = {
+        "iters": args.iters,
+        "warmup": args.warmup,
+        "payloads": payloads,
+        "arms": arms,
+        "engine_step_ms": args.engine_step_ms,
+    }
+    print(
+        f"Benchmarking arms [{', '.join(arms)}] over {len(payloads)} "
+        f"payloads, {args.warmup}+{args.iters} iters each, on "
+        f"{torch.cuda.get_device_name(0)} …\n"
+    )
     mp.spawn(_worker, args=(2, args.port, argsd, args.out), nprocs=2, join=True)
     print(f"\nReport written to {args.out}")
     return 0
