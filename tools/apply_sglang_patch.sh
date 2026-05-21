@@ -8,9 +8,9 @@
 #   ./tools/apply_sglang_patch.sh --colocate <path-to-sglang-repo> # base patch + colocate (NCCL) patch
 #
 # --colocate applies sglang.patch then colocate.patch, in that order
-# (colocate.patch stacks on the disagg patch). colocate.patch currently
-# only exists for v0.5.8.post1, so SGLANG_VERSION defaults to
-# v0.5.8.post1 in that mode unless you set it explicitly.
+# (colocate.patch stacks on the disagg patch). SGLANG_VERSION defaults
+# to v0.5.10.post1 (the GPU-validated colocate target); set it
+# explicitly to use a different version.
 #
 # Please note that this will overwrite all local changes and delete untracked files.
 
@@ -20,7 +20,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
 PATCH_NAMES=("sglang.patch")
-COLOCATE=false
 case "${1:-}" in
     --decode)
         PATCH_NAMES=("sglang_decode.patch")
@@ -28,18 +27,11 @@ case "${1:-}" in
         ;;
     --colocate)
         PATCH_NAMES=("sglang.patch" "colocate.patch")
-        COLOCATE=true
         shift
         ;;
 esac
 
-if [ -z "${SGLANG_VERSION:-}" ]; then
-    if [ "$COLOCATE" = true ]; then
-        SGLANG_VERSION="v0.5.8.post1"
-    else
-        SGLANG_VERSION="v0.5.10.post1"
-    fi
-fi
+SGLANG_VERSION="${SGLANG_VERSION:-v0.5.10.post1}"
 SGLANG_DIR="$PROJECT_ROOT/docker/sglang/$SGLANG_VERSION"
 
 if [ ! -d "$SGLANG_DIR" ]; then

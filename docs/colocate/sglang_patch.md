@@ -5,40 +5,41 @@
 > patch surface so a human submitter can drive the upstream PR (or, in
 > the meantime, maintain a fork).
 >
-> **The patch now lives in this repo as
-> [`patches/sglang/v0.5.8.post1/colocate.patch`](../../patches/sglang/v0.5.8.post1/colocate.patch).**
-> It is applied on top of the existing `sglang.patch` (the disagg
-> patch). The Modal smoke image (`scripts/modal/modal_colocate_smoke.py`)
-> applies both in order; for a local checkout,
-> `./tools/apply_sglang_patch.sh --colocate <sglang-repo>` does the
-> same. The pseudocode in the rest of this document still describes
-> what the patch does and serves as the upstream-PR spec — see
-> `colocate.patch` for the actual diff.
+> **The patch lives in this repo under
+> `patches/sglang/<version>/colocate.patch`; `v0.5.10.post1` is the
+> current default.** It is applied on top of the existing `sglang.patch`
+> (the disagg patch). The Modal smoke image
+> (`scripts/modal/modal_colocate_smoke.py`) applies both in order; for a
+> local checkout, `./tools/apply_sglang_patch.sh --colocate <sglang-repo>`
+> does the same. The pseudocode in the rest of this document still
+> describes what the patch does and serves as the upstream-PR spec —
+> see `colocate.patch` for the actual diff.
 
-> **Version status.** `patches/sglang/v0.5.8.post1/colocate.patch` is
-> the original GPU-verified reference. `patches/sglang/v0.5.10.post1/colocate.patch`
-> is a forward-port — `parallel_state.py` was reworked (v0.5.10
-> restructured `initialize_model_parallel` with new `_ATTN_CP` /
-> `_ATTN_TP` / MoE-DP groups, so the per-site rank branches became a
-> uniform engine-logical-world + offset-shift remap; the
-> `dp_attention.py` hunk is dropped because v0.5.10 moved that group
-> into `initialize_model_parallel`).
+> **Version status.** `patches/sglang/v0.5.10.post1/colocate.patch` is
+> the **default, fully GPU-validated** colocate patch — as of the
+> 2026-05-21 cutover, `apply_sglang_patch.sh --colocate`,
+> `run_smoke_host.sh`, and the Modal smoke all default to it.
+> `patches/sglang/v0.5.8.post1/colocate.patch` is retained as a
+> fallback (`SGLANG_PATCH_VERSION=v0.5.8.post1` selects it) but is no
+> longer the maintained target.
 >
-> **GPU-tested 2026-05-21 on RunPod H100s** with
-> `SGLANG_PATCH_VERSION=v0.5.10.post1`:
-> - `test_colocate_tiny.py` — 2/2 passed on 1×H100 (**tp_size=1**): the
->   engine joins the union NCCL world, hidden states move over NCCL
->   P2P, loss decreases 12.02 → 9.74 over 20 steps.
-> - `test_colocate_tp2.py` — passed on 2×H100 (**engine_tp_size=2**):
->   2 engine TP ranks, exercising the `parallel_state.py` offset-shift
->   group-arithmetic rework; loss decreases 12.04 → 11.37 over 5 steps.
+> The v0.5.10 forward-port reworked `parallel_state.py` — v0.5.10
+> restructured `initialize_model_parallel` (new `_ATTN_CP` / `_ATTN_TP`
+> / MoE-DP groups), so the per-site rank branches became a uniform
+> engine-logical-world + offset-shift remap; the `dp_attention.py` hunk
+> is dropped because v0.5.10 moved that group into
+> `initialize_model_parallel`.
 >
+> **GPU validation (2026-05-21, RunPod H100).** The full
+> `run_smoke_host.sh --full` matrix — all 13 tests across 9 files —
+> **passes on 4×H100** with `SGLANG_PATCH_VERSION=v0.5.10.post1`:
+> tp_size=1, engine_tp_size=2, 4-engine Qwen3-8B end-to-end, grad
+> parity (smoke / determinism / full), checkpoint save+resume, CUDA
+> IPC, multi-engine fan-out, 200-step stability, and convergence.
 > Still unexercised: pipeline parallelism (`pp_size>1`, blocked by an
-> explicit guard) and the Qwen3-8B-scale 4×H100 matrix
-> (`run_smoke_host.sh --full`). Two host-side fixes were needed and are
-> *not* part of this patch: `apt-get install libnuma1` (missing from the
-> RunPod `runpod-torch-v240` image), and a TorchSpec `_init_rope` fix
-> for transformers' `rope_type="default"`. See
+> explicit guard). One TorchSpec-side fix outside this patch was needed
+> for the matrix — the `_init_rope` handling of transformers'
+> `rope_type="default"` (committed separately). See
 > [Testing the v0.5.10.post1 forward-port](#testing-the-v0510post1-forward-port).
 
 ## Testing the v0.5.10.post1 forward-port

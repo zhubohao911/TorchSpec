@@ -45,8 +45,8 @@ TORCHSPEC_REPO = "https://github.com/zhubohao911/TorchSpec.git"
 TORCHSPEC_BRANCH = "feature/colocate-training-inference"
 # Bump to bust the Modal image cache when the upstream pinned commit changes.
 TORCHSPEC_PIN_COMMIT = "cbecbec"
-SGLANG_COMMIT = "0f2df9370a1de1b4fb11b071d39ab3ce2287a350"
-SGLANG_PATCH_VERSION = "v0.5.8.post1"
+SGLANG_COMMIT = "94f03a39dbd39edfc2b118b5357bbbadaaa9ad28"
+SGLANG_PATCH_VERSION = "v0.5.10.post1"
 
 REPO_DIR = "/workspace/TorchSpec"
 SGLANG_DIR = f"{REPO_DIR}/_sglang"
