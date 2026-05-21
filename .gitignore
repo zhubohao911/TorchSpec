@@ -89,3 +89,8 @@ wandb/log.txt
 
 .claude/
 wandb/
+
+# Colocate knowledge docs (keep local only, not for PR)
+docs/colocate/knowledge.md
+docs/colocate/knowledge.zh-en.md
+docs/colocate/gpu_cuda_knowledge.zh-en.md
