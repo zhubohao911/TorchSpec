@@ -122,8 +122,7 @@ def validate_colocate_config(args: Any) -> None:
     combo = (strategy, transfer_mode)
     if combo not in SUPPORTED_COMBINATIONS:
         supported_str = ", ".join(
-            f"(colocate_strategy={s!r}, transfer_mode={t!r})"
-            for s, t in SUPPORTED_COMBINATIONS
+            f"(colocate_strategy={s!r}, transfer_mode={t!r})" for s, t in SUPPORTED_COMBINATIONS
         )
         raise ColocateConfigError(
             f"Unsupported colocate combination: colocate_strategy={strategy!r}, "
@@ -153,13 +152,9 @@ def validate_colocate_config(args: Any) -> None:
     train_frac = float(train_frac)
     infer_frac = float(infer_frac)
     if not (0.0 < train_frac < 1.0):
-        raise ColocateConfigError(
-            f"training.train_frac must be in (0, 1); got {train_frac}."
-        )
+        raise ColocateConfigError(f"training.train_frac must be in (0, 1); got {train_frac}.")
     if not (0.0 < infer_frac < 1.0):
-        raise ColocateConfigError(
-            f"training.infer_frac must be in (0, 1); got {infer_frac}."
-        )
+        raise ColocateConfigError(f"training.infer_frac must be in (0, 1); got {infer_frac}.")
     total = train_frac + infer_frac + _HEADROOM_FRAC
     if total > 1.0 + 1e-9:
         raise ColocateConfigError(

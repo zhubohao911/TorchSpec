@@ -106,19 +106,13 @@ def rank_for_role(spec: UnionWorldSpec, role: str, role_rank: int) -> int:
     """
     if role == ROLE_TRAINER:
         if not 0 <= role_rank < spec.n_per_role:
-            raise ValueError(
-                f"trainer role_rank {role_rank} out of range [0, {spec.n_per_role})"
-            )
+            raise ValueError(f"trainer role_rank {role_rank} out of range [0, {spec.n_per_role})")
         return role_rank
     if role == ROLE_ENGINE:
         if not 0 <= role_rank < spec.n_per_role:
-            raise ValueError(
-                f"engine role_rank {role_rank} out of range [0, {spec.n_per_role})"
-            )
+            raise ValueError(f"engine role_rank {role_rank} out of range [0, {spec.n_per_role})")
         return spec.n_per_role + role_rank
-    raise ValueError(
-        f"unknown role {role!r}; expected {ROLE_TRAINER!r} or {ROLE_ENGINE!r}"
-    )
+    raise ValueError(f"unknown role {role!r}; expected {ROLE_TRAINER!r} or {ROLE_ENGINE!r}")
 
 
 def trainer_global_ranks(spec: UnionWorldSpec) -> list[int]:
@@ -237,8 +231,13 @@ def init_union_world(
     logger.info(
         "Initialising union world: role=%s role_rank=%d global_rank=%d "
         "paired_global_rank=%d world_size=%d init_method=%s device=%s",
-        role, role_rank, global_rank, paired_global_rank,
-        spec.world_size, spec.init_method, device,
+        role,
+        role_rank,
+        global_rank,
+        paired_global_rank,
+        spec.world_size,
+        spec.init_method,
+        device,
     )
 
     # NB: deliberately *do not* pass ``device_id=`` here. Passing it
@@ -299,9 +298,10 @@ def init_union_world(
     # rendezvous deadlock. Invisible at N=1 (fsdp is skipped); fatal at
     # N>=2. So: all shared groups first, role-restricted groups after.
     logger.info(
-        "[colocate] %s rank %d: world.py new_group #1 sglang-paired nccl "
-        "(all %d ranks)",
-        role, role_rank, spec.world_size,
+        "[colocate] %s rank %d: world.py new_group #1 sglang-paired nccl (all %d ranks)",
+        role,
+        role_rank,
+        spec.world_size,
     )
     _ = dist.new_group(
         ranks=all_world_ranks,
@@ -309,9 +309,10 @@ def init_union_world(
         use_local_synchronization=True,
     )
     logger.info(
-        "[colocate] %s rank %d: world.py new_group #2 sglang-paired gloo "
-        "(all %d ranks)",
-        role, role_rank, spec.world_size,
+        "[colocate] %s rank %d: world.py new_group #2 sglang-paired gloo (all %d ranks)",
+        role,
+        role_rank,
+        spec.world_size,
     )
     _ = dist.new_group(
         ranks=all_world_ranks,
@@ -319,9 +320,10 @@ def init_union_world(
         use_local_synchronization=True,
     )
     logger.info(
-        "[colocate] %s rank %d: world.py new_group #3 meta_group gloo "
-        "(all %d ranks)",
-        role, role_rank, spec.world_size,
+        "[colocate] %s rank %d: world.py new_group #3 meta_group gloo (all %d ranks)",
+        role,
+        role_rank,
+        spec.world_size,
     )
     meta_group = dist.new_group(
         ranks=all_world_ranks,
@@ -337,9 +339,10 @@ def init_union_world(
         # skip when there's only one trainer (e.g. tests at minimal
         # scale). FSDP itself doesn't need a group at world_size 1.
         logger.info(
-            "[colocate] %s rank %d: world.py new_group #4 fsdp nccl "
-            "(trainer ranks %s)",
-            role, role_rank, fsdp_ranks,
+            "[colocate] %s rank %d: world.py new_group #4 fsdp nccl (trainer ranks %s)",
+            role,
+            role_rank,
+            fsdp_ranks,
         )
         fsdp_group = dist.new_group(
             ranks=fsdp_ranks,
@@ -363,9 +366,10 @@ def init_union_world(
     # 1-rank groups cleanly (unlike NCCL where 1-rank groups can hang
     # at eager init).
     logger.info(
-        "[colocate] %s rank %d: world.py new_group #5 trainer-only gloo "
-        "(trainer ranks %s)",
-        role, role_rank, trainer_global_ranks(spec),
+        "[colocate] %s rank %d: world.py new_group #5 trainer-only gloo (trainer ranks %s)",
+        role,
+        role_rank,
+        trainer_global_ranks(spec),
     )
     trainer_only_gloo = dist.new_group(
         ranks=trainer_global_ranks(spec),
@@ -380,7 +384,8 @@ def init_union_world(
 
     logger.info(
         "[colocate] %s rank %d: world.py all new_groups complete",
-        role, role_rank,
+        role,
+        role_rank,
     )
 
     os.environ[UNION_WORLD_ENV_MARKER] = "1"

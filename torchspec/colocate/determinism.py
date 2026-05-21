@@ -96,8 +96,6 @@ def seed_everything(seed: int, *, strict: bool | None = None) -> None:
     try:
         from torchspec.utils.logging import logger
 
-        logger.info(
-            "[determinism] seeded everything (seed=%d, strict=%s)", seed, strict
-        )
+        logger.info("[determinism] seeded everything (seed=%d, strict=%s)", seed, strict)
     except Exception:  # pragma: no cover
         pass

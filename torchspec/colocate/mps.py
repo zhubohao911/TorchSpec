@@ -68,7 +68,9 @@ class MpsHandle:
     running, in which case ``stop_mps_daemon`` becomes a best-effort no-op."""
 
 
-def mps_client_env(pipe_dir: str = DEFAULT_PIPE_DIR, log_dir: str = DEFAULT_LOG_DIR) -> dict[str, str]:
+def mps_client_env(
+    pipe_dir: str = DEFAULT_PIPE_DIR, log_dir: str = DEFAULT_LOG_DIR
+) -> dict[str, str]:
     """Env vars that MPS clients (trainer + engine) need.
 
     Both must point at the same control pipe directory; otherwise they'd
@@ -164,9 +166,7 @@ def start_mps_daemon(
     os.makedirs(log_dir, exist_ok=True)
 
     env = {**os.environ, **mps_client_env(pipe_dir=pipe_dir, log_dir=log_dir)}
-    logger.info(
-        "Starting MPS control daemon (pipe_dir=%s, log_dir=%s)", pipe_dir, log_dir
-    )
+    logger.info("Starting MPS control daemon (pipe_dir=%s, log_dir=%s)", pipe_dir, log_dir)
     try:
         # `-d` runs in daemon mode; the binary backgrounds itself and exits
         # 0 if it spawned successfully.
@@ -280,8 +280,10 @@ def force_stop_mps(
     try:
         subprocess.run(
             ["pkill", "-9", "-f", "nvidia-cuda-mps"],
-            check=False, timeout=10,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError) as e:  # pragma: no cover
         logger.warning("force_stop_mps: pkill failed: %s", e)
@@ -290,7 +292,8 @@ def force_stop_mps(
     shutil.rmtree(log_dir, ignore_errors=True)
     logger.info(
         "force_stop_mps: killed nvidia-cuda-mps processes, removed %s + %s",
-        pipe_dir, log_dir,
+        pipe_dir,
+        log_dir,
     )
 
 
@@ -335,8 +338,11 @@ def _probe_mps_server_works(
     try:
         proc = subprocess.run(
             ["python3", "-c", probe_code],
-            env=env, timeout=timeout_s,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            env=env,
+            timeout=timeout_s,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
         )
     except subprocess.TimeoutExpired as e:
         return False, f"MPS probe timed out after {timeout_s}s: {e}"
@@ -482,9 +488,7 @@ def ensure_mps_on_all_nodes(
     for n in nodes:
         node_id = n["NodeID"]
         strategy = NodeAffinitySchedulingStrategy(node_id, soft=False)
-        pending[node_id] = _bootstrap_mps_on_node.options(
-            scheduling_strategy=strategy
-        ).remote()
+        pending[node_id] = _bootstrap_mps_on_node.options(scheduling_strategy=strategy).remote()
 
     results: dict[str, bool] = {}
     for node_id, ref in pending.items():
@@ -495,6 +499,7 @@ def ensure_mps_on_all_nodes(
             results[node_id] = False
     logger.info(
         "[colocate] per-node MPS bootstrap: %d/%d nodes ready",
-        sum(results.values()), len(results),
+        sum(results.values()),
+        len(results),
     )
     return results
