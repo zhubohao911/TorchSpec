@@ -54,7 +54,11 @@ You are spending real money and sharing an account with other agents.
   Qwen3-0.6B tests do not need it. Ask the user for the token if you do
   not have one; never commit it anywhere.
 
-## Workflow
+## Workflow (RunPod — the ready path)
+
+RunPod is the platform set up on this machine and used for every GPU
+run to date. Vast.ai is a working alternative — see the section after
+this one.
 
 ### 1 — Provision
 
@@ -150,6 +154,46 @@ runpodctl pod get <id>          # must say: pod not found
 runpodctl user                  # confirm currentSpendPerHr dropped
 ```
 
+## Vast.ai (alternative platform)
+
+Vast.ai is a documented alternative — it ran the 4×H100 `--full` suite
+in sessions #4/#5 ([`implementation_log.md`](implementation_log.md)),
+and is often cheaper than RunPod. The `vastai` CLI (v1.0.x) is
+installed, **but not authenticated on this machine.** Before an agent
+can use Vast autonomously, the user must run it once:
+
+```bash
+vastai set api-key <KEY>      # key from the vast.ai console
+```
+
+All the same constraints and **hard rules** above apply (check other
+instances, watch balance, tear down every time). Vast On-Demand
+instances default to `--ipc=host`; choose a "Direct" net-type host with
+a good reliability score and a CUDA 12.x + Python 3.11 PyTorch image.
+sm90+ only, same as RunPod.
+
+The workflow mirrors the RunPod one — only the CLI differs:
+
+| Step | RunPod | Vast.ai |
+|---|---|---|
+| find capacity | `runpodctl gpu list` | `vastai search offers 'gpu_name=H100_SXM num_gpus=4 reliability>0.98'` |
+| provision | `runpodctl pod create …` | `vastai create instance <offer-id> --image <pytorch-cu124-img> --disk 200 --ssh --direct` |
+| list | `runpodctl pod list -o json` | `vastai show instances` |
+| SSH endpoint | `.ssh.ip` / `.ssh.port` | `vastai ssh-url <id>` |
+| **tear down** | `pod stop` + `pod delete` | **`vastai destroy instance <id>`** |
+
+Run `vastai search offers --help` / `vastai create instance --help` for
+exact field syntax — query fields and image flags change between CLI
+versions.
+
+> **Two Vast-specific cautions:**
+> - **`stop instance` is not enough** — a stopped Vast instance still
+>   **bills for storage**. Only `destroy instance` (irreversible —
+>   deletes the disk) fully stops billing. Always `destroy` when done.
+> - **No `--terminate-after` backstop.** RunPod self-destructs a lost
+>   pod; Vast does not. The "always tear down" rule is therefore
+>   load-bearing on Vast — never leave an instance unattended.
+
 ## GPU sizing
 
 | Test | GPUs | Model | ~Time (after setup) |
@@ -179,5 +223,9 @@ Setup (pip install + sglang build) adds ~5–12 min on top, once per pod.
 | 2×H100 SXM | ~$6.6/hr | tp2 ≈ $3–4 |
 | 4×H100 SXM | ~$13/hr | `--full` ≈ $8–12 |
 
-Keep the pod alive only for the run. Idle pod time is pure waste — tear
+Rates above are RunPod. Vast.ai spot is usually cheaper (~$2/hr for
+1×H100, ~$10–11/hr for 4×H100) but availability and host reliability
+vary more.
+
+Keep the pod alive only for the run. Idle time is pure waste — tear
 down immediately on completion.
