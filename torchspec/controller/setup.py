@@ -87,9 +87,7 @@ def setup_async_training_with_engines(
     return controller, inference_manager
 
 
-def setup_colocate_training_with_engines(
-    args, train_group, inference_engines, controller=None
-):
+def setup_colocate_training_with_engines(args, train_group, inference_engines, controller=None):
     """Setup the slim colocate (NCCL transfer) variant of training.
 
     Differs from :func:`setup_async_training_with_engines` in three ways:
@@ -150,14 +148,13 @@ def setup_colocate_training_with_engines(
         driver_node_id = ray.get_runtime_context().get_node_id()
         controller = AsyncTrainingController.options(
             runtime_env={"env_vars": get_torchspec_env_vars()},
-            scheduling_strategy=NodeAffinitySchedulingStrategy(
-                node_id=driver_node_id, soft=False
-            ),
+            scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=driver_node_id, soft=False),
         ).remote(args, dp_size)
 
     train_queues = ray.get(controller.get_train_queues.remote())
     train_group.set_train_queues(
-        train_queues, mooncake_config=None,
+        train_queues,
+        mooncake_config=None,
         per_dp_rank_batch_size=args.per_dp_rank_batch_size,
     )
 
@@ -167,7 +164,9 @@ def setup_colocate_training_with_engines(
     logger.info(
         "Colocate (NCCL) training wiring complete: %d engines, dp_size=%d, "
         "per_dp_rank_batch_size=%d, no AsyncInferenceManager, no Mooncake.",
-        len(inference_engines), dp_size, args.per_dp_rank_batch_size,
+        len(inference_engines),
+        dp_size,
+        args.per_dp_rank_batch_size,
     )
 
     return controller, None

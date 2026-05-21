@@ -330,8 +330,7 @@ def training_loop(
                 if os.environ.get("TORCHSPEC_LOSS_CURVE_LOG"):
                     _lc = metrics.get("train/avg_loss")
                     if _lc is not None:
-                        logger.info("[loss_curve] step=%d loss=%.6f",
-                                    completed_steps, float(_lc))
+                        logger.info("[loss_curve] step=%d loss=%.6f", completed_steps, float(_lc))
 
                 # Add inference metrics (e2e_latency, spec metrics, etc.)
                 inference_metrics = ray.get(inference_manager.flush_metrics.remote())

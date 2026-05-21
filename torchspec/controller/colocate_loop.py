@@ -51,7 +51,6 @@ from tqdm.auto import tqdm
 from torchspec.training.data_fetcher import ColocateTrainSample
 from torchspec.utils.logging import logger
 
-
 # Mirror the disagg path: hidden states are stored / sent in this
 # storage dtype (bf16 by default). Keep in lockstep with
 # `HIDDEN_STATES_STORAGE_DTYPE` in the SglEngine module.
@@ -84,9 +83,7 @@ def _build_tensor_specs(
     irrelevant.
     """
     if num_aux_layers <= 0:
-        raise ValueError(
-            f"num_aux_layers must be > 0 to size hidden_states; got {num_aux_layers}"
-        )
+        raise ValueError(f"num_aux_layers must be > 0 to size hidden_states; got {num_aux_layers}")
     concat_hidden_size = num_aux_layers * hidden_size
     specs: dict[str, tuple[tuple[int, ...], Any]] = {
         "hidden_states": ((seq_len, concat_hidden_size), _HIDDEN_STATES_DTYPE),
@@ -145,8 +142,7 @@ def run_colocate_training_loop(
         )
 
     dp_size = int(
-        getattr(args, "dp_size", None)
-        or args.training_num_nodes * args.training_num_gpus_per_node
+        getattr(args, "dp_size", None) or args.training_num_nodes * args.training_num_gpus_per_node
     )
     n_engines = len(inference_engines)
     if n_engines == 0 or dp_size % n_engines != 0:
@@ -182,16 +178,18 @@ def run_colocate_training_loop(
             "in train_entry or set it explicitly in the config."
         )
     num_aux_layers = len(aux_layers)
-    store_last_hidden_states = bool(
-        getattr(args, "store_last_hidden_states", True)
-    )
+    store_last_hidden_states = bool(getattr(args, "store_last_hidden_states", True))
 
     logger.info(
         "[colocate_loop] dp_size=%d engines=%d hidden_size=%d "
         "num_aux_layers=%d store_last_hidden_states=%s "
         "per_dp_rank_batch_size=%d num_train_steps=%d",
-        dp_size, n_engines, hidden_size, num_aux_layers,
-        store_last_hidden_states, per_dp_rank_batch_size,
+        dp_size,
+        n_engines,
+        hidden_size,
+        num_aux_layers,
+        store_last_hidden_states,
+        per_dp_rank_batch_size,
         int(args.num_train_steps),
     )
 
@@ -203,8 +201,7 @@ def run_colocate_training_loop(
     train_queues = ray.get(controller.get_train_queues.remote())
     if len(train_queues) != dp_size:
         raise RuntimeError(
-            f"controller.get_train_queues returned {len(train_queues)} "
-            f"queues but dp_size={dp_size}"
+            f"controller.get_train_queues returned {len(train_queues)} queues but dp_size={dp_size}"
         )
 
     return_last_hidden_states = store_last_hidden_states
@@ -212,9 +209,7 @@ def run_colocate_training_loop(
 
     enable_perf = bool(getattr(args, "enable_perf_metrics", True))
 
-    completed_steps = int(
-        ray.get(train_group._actor_handlers[0].get_global_step.remote())
-    )
+    completed_steps = int(ray.get(train_group._actor_handlers[0].get_global_step.remote()))
     num_steps = int(args.num_train_steps)
     # Periodic checkpointing. The colocate loop uses the same
     # `save_interval` config knob as the disagg loop (loop.py) -- the
@@ -226,7 +221,9 @@ def run_colocate_training_loop(
     save_interval = int(getattr(args, "save_interval", 0) or 0)
     last_saved_step = completed_steps
     progress = tqdm(
-        total=num_steps, desc="Colocate Training", unit="step",
+        total=num_steps,
+        desc="Colocate Training",
+        unit="step",
         initial=completed_steps,
     )
 
@@ -243,7 +240,9 @@ def run_colocate_training_loop(
                 logger.warning(
                     "[colocate_loop] Not enough prompts after reload "
                     "(%d < %d). Stopping at step %d.",
-                    len(prompts), dp_size, completed_steps,
+                    len(prompts),
+                    dp_size,
+                    completed_steps,
                 )
                 break
 
@@ -288,7 +287,7 @@ def run_colocate_training_loop(
         #     the original one-prompt-per-engine dispatch.
         engine_refs: list[Any] = []
         for e in range(n_engines):
-            grp = prompts[e * engine_tp_size:(e + 1) * engine_tp_size]
+            grp = prompts[e * engine_tp_size : (e + 1) * engine_tp_size]
             input_ids_ref = ray.put([p.input_ids for p in grp])
             masks = [p.packed_loss_mask for p in grp]
             engine_refs.append(
@@ -308,7 +307,8 @@ def run_colocate_training_loop(
         # spec_training callback, NCCL send unblocks the trainer recv.
         train_refs = [
             actor.train_from_queue.remote(
-                step=completed_steps, num_batches=1,
+                step=completed_steps,
+                num_batches=1,
             )
             for actor in train_group._actor_handlers
         ]
@@ -342,21 +342,18 @@ def run_colocate_training_loop(
             if os.environ.get("TORCHSPEC_LOSS_CURVE_LOG"):
                 _lc = metrics.get("train/avg_loss")
                 if _lc is not None:
-                    logger.info("[loss_curve] step=%d loss=%.6f",
-                                completed_steps, float(_lc))
+                    logger.info("[loss_curve] step=%d loss=%.6f", completed_steps, float(_lc))
 
             if enable_perf:
                 step_dt = time.time() - t_step
                 metrics["perf/step_time"] = step_dt
                 if step_dt > 0:
-                    metrics["perf/train_capacity"] = (
-                        args.global_batch_size / step_dt
-                    )
+                    metrics["perf/train_capacity"] = args.global_batch_size / step_dt
                 if completed_steps % 5 == 0 or completed_steps <= 5:
                     logger.info(
-                        "[colocate_loop] step=%d step_time=%.3fs "
-                        "loss=%s lr=%s peak_alloc=%s",
-                        completed_steps, step_dt,
+                        "[colocate_loop] step=%d step_time=%.3fs loss=%s lr=%s peak_alloc=%s",
+                        completed_steps,
+                        step_dt,
                         metrics.get("train/avg_loss"),
                         metrics.get("train/lr"),
                         metrics.get("perf/peak_bytes_allocated"),
@@ -374,11 +371,7 @@ def run_colocate_training_loop(
 
     # Final save: persist the last step if periodic saving is enabled
     # and the last step wasn't already a save-interval boundary.
-    if (
-        save_interval > 0
-        and completed_steps > 0
-        and completed_steps != last_saved_step
-    ):
+    if save_interval > 0 and completed_steps > 0 and completed_steps != last_saved_step:
         logger.info(
             "[colocate_loop] Saving final checkpoint at step %d ...",
             completed_steps,
@@ -388,5 +381,6 @@ def run_colocate_training_loop(
 
     logger.info(
         "[colocate_loop] Training complete: completed_steps=%d / num_steps=%d",
-        completed_steps, num_steps,
+        completed_steps,
+        num_steps,
     )

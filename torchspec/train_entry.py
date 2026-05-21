@@ -39,7 +39,6 @@ from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from torchspec import AutoDraftModelConfig
 from torchspec.colocate import is_mps_colocate, validate_colocate_config
-from torchspec.colocate.mps import setup_for_colocate
 from torchspec.config.train_config import config_to_flat_args, load_config
 from torchspec.config.utils import generate_draft_model_config
 from torchspec.controller import (
@@ -302,9 +301,7 @@ def _maybe_resolve_colocate_aux_layers(args) -> None:
     from torchspec.utils.misc import get_default_eagle3_aux_layer_ids
 
     args.aux_hidden_states_layers = get_default_eagle3_aux_layer_ids(args.target_model_path)
-    logger.info(
-        f"Colocate: auto-set aux_hidden_states_layers = {args.aux_hidden_states_layers}"
-    )
+    logger.info(f"Colocate: auto-set aux_hidden_states_layers = {args.aux_hidden_states_layers}")
 
 
 def train_async_no_generation(args):
@@ -354,7 +351,8 @@ def train_async_no_generation(args):
             os.environ.update(_mps_env)
             logger.info(
                 "MPS daemon ready (pre-Ray start, started_by_us=%s, pipe_dir=%s)",
-                _mps_handle.started_by_us, _mps_handle.pipe_dir,
+                _mps_handle.started_by_us,
+                _mps_handle.pipe_dir,
             )
 
     # [1] Create controller early (lightweight: only needs args + dp_size)
@@ -509,8 +507,11 @@ def train_async_no_generation(args):
                 "[colocate] Driver-computed union rendezvous: %s:%d "
                 "(world_size=2*%d=%d, timeout=%dmin). Injecting into engine "
                 "runtime_env so the patched sglang sees it before init.",
-                union_master_addr, union_master_port, n_per_role,
-                2 * n_per_role, union_timeout_min,
+                union_master_addr,
+                union_master_port,
+                n_per_role,
+                2 * n_per_role,
+                union_timeout_min,
             )
 
         train_init_refs = train_group.async_init(
@@ -536,7 +537,9 @@ def train_async_no_generation(args):
         # because both sides start tiny and grow into their share).
 
         inference_engines, engine_init_refs = prepare_inference_engines(
-            args, pgs["inference"], mooncake_config,
+            args,
+            pgs["inference"],
+            mooncake_config,
             extra_env_vars=engine_extra_env if is_mps_colocate(args) else None,
         )
 
