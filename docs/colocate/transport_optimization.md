@@ -266,11 +266,10 @@ benchmark in Part 3 (numbers are projections, not measurements):
 The headline is Opt 2: it removes the largest cost from the engine's
 critical path. Opt 1 is its prerequisite and a modest win on its own.
 
-> **Measured 2026-05-21 (H100 SXM) — see Part 4 below.** The projection
-> held in direction: `ipc-pipe` delivered **3.2×** on the Eagle3
-> engine-`send()` stall (2.65 → 0.82 ms). `ipc-pool` *alone* did **not**
-> — it was break-even, and a net regression at 256 MB — so Opt 1 ships
-> only bundled inside Opt 2, never standalone.
+> **Measured 2026-05-21 — see Parts 4 & 5.** `ipc-pipe` delivered
+> **3.2×** non-MPS and **3.9×** under MPS on the Eagle3 engine-`send()`
+> stall. `ipc-pool` *alone* did **not** — break-even, a net regression
+> at 256 MB — so Opt 1 ships only bundled inside Opt 2, never standalone.
 
 ---
 
@@ -379,20 +378,16 @@ python scripts/colocate/bench_transport.py --arms ipc,ipc-pipe --engine-step-ms 
 
 ---
 
-## Part 4 — Measured results (2026-05-21, H100 SXM)
+## Part 4 — Measured results, non-MPS baseline (2026-05-21, H100 SXM)
 
-> **⚠ Validity caveat — this A/B was measured WITHOUT MPS.** The
-> benchmark spawns two plain processes (the report prints `MPS active:
-> no`); the real colocate path runs every engine↔trainer pair under CUDA
-> **MPS**. CUDA IPC and MPS interact, so the numbers below **do not
-> establish colocate-environment behaviour** — a non-MPS measurement was
-> used to reason about an MPS-only transport. A separate instrumented
-> diagnosis found the colocate loop **hangs at step 0 under MPS**,
-> upstream of the transport (`ipc_send` / `ipc_recv` are never reached).
-> Until this A/B is repeated under MPS and that hang is resolved, treat
-> the `3.2×` and the "ship `ipc-pipe`" recommendation as **provisional**.
-> Part 1's conclusion (no C++/CUDA/Triton kernel needed) is
-> MPS-independent and is unaffected.
+> **✅ Re-validated under MPS — see Part 5.** The non-MPS caveat that
+> stood here is resolved. The step-0 MPS hang was a probe bug —
+> `probe_ipc_capability()` ran a `reduce_tensor()` IPC smoke test that
+> poisoned the MPS context (fixed in `e166c21`); it was never the
+> transport. The A/B was repeated under MPS and the numbers hold
+> (Eagle3 `ipc-pipe` 3.2× → **3.9×**). The tables in this Part 4 are the
+> original **non-MPS** run, kept for comparison; Part 5 has the
+> MPS-validated numbers.
 
 The four arms (`gloo`, `ipc`, `ipc-pool`, `ipc-pipe`) were run on a
 RunPod **1×H100 80GB SXM** (torch 2.4.1 + CUDA 12.4, no MPS), 5 warmup +
@@ -460,6 +455,68 @@ step's round-trip is not inside the measured window at all.
 
 ---
 
+## Part 5 — MPS re-validation (2026-05-21)
+
+The Part 4 A/B was re-run **under CUDA MPS** after the step-0 hang was
+root-caused and fixed.
+
+### The hang was a probe bug, not the transport
+
+`probe_ipc_capability()` ran a `reduce_tensor()` "smoke test" — it
+shared a scratch CUDA tensor over IPC with no consumer ever mapping it,
+leaving PyTorch's CUDA-IPC producer-side machinery in a state that
+wedged the engine's next `generate()` under MPS. The transport
+(`ipc_send` / `ipc_recv`) was never the cause. Fixed in **`e166c21`**:
+`probe_ipc_capability()` no longer calls `reduce_tensor()` — it does a
+non-destructive `PYTORCH_*ALLOC_CONF` config check instead.
+
+### Standalone bench — under MPS (`MPS active: yes`, all arms byte-correct)
+
+H100 80GB SXM, torch 2.9.1, 5 warmup + 30 iters. Engine `send()` stall,
+warm mean (ms):
+
+| Payload | `ipc` | `ipc-pool` | `ipc-pipe` | ipc → ipc-pipe |
+|---|--:|--:|--:|--:|
+| single 16 MB | 1.607 | 1.206 | 0.439 | **3.7×** |
+| single 64 MB | 1.695 | 1.198 | 1.557 | **1.1×** |
+| single 256 MB | 1.614 | 1.998 | 1.384 | **1.2×** |
+| **Eagle3 160 MB** | **3.006** | **1.953** | **0.780** | **3.9×** |
+
+Stage anatomy confirms both mechanisms under MPS: `cudaIpcOpenMemHandle`
+0.668 ms → **0.008 ms** (handle cache), ack wait 2.066 ms → **0.117 ms**
+(pipelining). The non-MPS conclusions hold — MPS does not change the
+transport story; `ipc-pipe` is, if anything, slightly better under MPS
+(3.2× → 3.9×).
+
+### Colocate-loop A/B — real `train_entry`, 50 steps, MPS active
+
+`train_entry` colocate-tiny (Qwen3-0.6B), IPC-default vs gloo
+(`TORCHSPEC_COLOCATE_IPC=0`):
+
+| Arm | Result | Warm step | Loss |
+|---|---|--:|---|
+| IPC (default) | 50 steps, no hang | 0.142 s | 12.02 → 7.75 |
+| gloo | 50 steps | 0.142 s | 12.02 → 7.75 |
+
+IPC-default runs clean in the real colocate loop under MPS — the fix is
+validated end-to-end. The two transports are **indistinguishable
+in-loop on the tiny model**: the few-MB tiny-model payload is noise
+against a ~142 ms step. The transport only moves the needle at the
+large-payload (Eagle3 160 MB) scale the standalone bench measures —
+consistent with Part 1: the transport is not a colocate step-time
+bottleneck.
+
+### Follow-up — `test_colocate_tiny` is red
+
+The `e166c21` probe fix correctly fail-fasts when `expandable_segments`
+is set, but `test_colocate_tiny._make_env` still forces
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` — incompatible with
+IPC-default. The test now fails fast (a clear error, better than the old
+hang) but is not green. Fix: drop `expandable_segments` from the test
+env for the IPC path, or have the colocate code strip it for IPC actors.
+
+---
+
 ## Recommendation & sequencing
 
 1. **Do not** write C++/CUDA or Triton — the transport has no kernel to
@@ -468,17 +525,15 @@ step's round-trip is not inside the measured window at all.
 2. **First**, re-run `run_smoke_host.sh --full` on 4×H100 with IPC as the
    new default — the open item from round 7; it settles *stability*
    (the benchmark already settled *performance*).
-3. **[ON HOLD — pending MPS validation.]** The GPU A/B measured **3.2×**
-   on the realistic engine-`send()` stall for `ipc-pipe` (pool + ack
-   pipelining), and `ipc-pool` alone as break-even / a 256 MB regression
-   — **but the A/B ran without MPS** (see the Part 4 caveat). The real
-   colocate path runs under MPS and currently **hangs at step 0**, before
-   the transport is even reached. Do **not** fold anything into
-   [`cuda_ipc.py`](../../torchspec/colocate/cuda_ipc.py) until the A/B is
-   re-run under MPS *and* that hang is resolved. The intended end state,
-   once validated, is still a single `TORCHSPEC_COLOCATE_IPC_PIPELINE`
-   flag (it implies the pool) with the `flush()`-at-loop-exit drain and
-   variable-`seq_len` pool-resize handling from Opt 2's correctness notes.
+3. **`ipc-pipe` (pool + ack pipelining) is now MPS-validated — 3.9× on
+   the Eagle3 engine-`send()` stall** (Part 5). The step-0 hang was a
+   probe bug (`e166c21`), not the transport. If/when transport latency
+   is worth optimizing, fold `ipc-pipe` into
+   [`cuda_ipc.py`](../../torchspec/colocate/cuda_ipc.py) behind one
+   `TORCHSPEC_COLOCATE_IPC_PIPELINE` flag (it implies the pool), with the
+   `flush()`-at-loop-exit drain and variable-`seq_len` pool-resize
+   handling from Opt 2's correctness notes. Do **not** ship `ipc-pool`
+   alone (break-even, regresses at 256 MB).
 4. **Opt 3 / Opt 4 — skip.** Opt 2 already takes the ack to 0.14 ms, so
    the IPC-event ack (Opt 3) has nothing left to win; Opt 4 (static
    metadata) is in the noise.
@@ -486,9 +541,8 @@ step's round-trip is not inside the measured window at all.
    worthwhile, not urgent. Do it when colocate step-time optimization
    comes up, not before.
 
-**Bottom line:** no C++/CUDA/Triton — that conclusion (Part 1) is
-MPS-independent and stands. The `ipc-pipe` 3.2× result, by contrast, was
-measured **without MPS** and is **not yet valid for the colocate
-environment** (which is MPS-based and currently hangs at step 0) — see
-the Part 4 caveat. It is on hold pending an MPS re-run, not shippable as
-recorded.
+**Bottom line:** no C++/CUDA/Triton (Part 1, MPS-independent). The
+`ipc-pipe` optimization is real and **MPS-validated** — 3.9× on the
+Eagle3 engine-`send()` stall (Part 5) — but low-priority: the transport
+is not a colocate step-time bottleneck. The step-0 MPS hang was a probe
+bug, fixed in `e166c21`; CUDA IPC as the default transport is correct.
