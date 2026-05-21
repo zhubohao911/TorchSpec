@@ -2261,3 +2261,61 @@ lands in v0.5.10.post1 directly, ending the forward-port treadmill.
 * A TorchSpec-side `_init_rope` fix (transformers `rope_type="default"`,
   commit `be399a0`) was needed for the matrix to run on a
   current-transformers environment — not part of the sglang patch.
+
+---
+
+## Follow-up round 9 — CUDA IPC default hang: diagnosed & fixed (2026-05-21, RunPod 1×H100)
+
+Round 7 flipped the default transport to CUDA IPC but flagged the
+`--full` IPC-default run as not-yet-done. That run was attempted on a
+4×H100 pod and **hung** at colocate training-loop step 0 — every actor
+finished init, then froze before the first hidden-state transfer.
+
+### Isolation (1×H100, colocate tiny config, 1 step each)
+
+| Config | Result |
+|---|---|
+| gloo + `expandable_segments` | PASS — `step=1, loss=12.02` |
+| gloo − `expandable_segments` | PASS → **`expandable_segments` ruled out** |
+| CUDA IPC, probe runs | **HANG** at step 0 |
+| CUDA IPC, probe skipped | PASS — `loss=12.02` |
+| CUDA IPC, non-destructive probe (the fix) | PASS — `loss=12.02` |
+
+Connector/fetcher instrumentation confirmed both sides agree on
+`_use_ipc=True`, and `connector.send` / `recv_step` (hence
+`ipc_send` / `ipc_recv`) are **never reached** — the engine wedges
+inside sglang's `generate()` forward, upstream of the transport.
+
+### Root cause
+
+`probe_ipc_capability()` ran a `reduce_tensor()` smoke test on a scratch
+CUDA tensor at connector/fetcher construction. `reduce_tensor()` shares
+the tensor via CUDA IPC; the probe then discarded it with no consumer
+ever mapping it. That leaves PyTorch's CUDA-IPC producer-side machinery
+in a state that wedges subsequent CUDA work **under MPS** — the engine's
+next forward hangs. The transport itself is innocent: once the probe is
+skipped, `ipc_send` / `ipc_recv` carry the step correctly — the IPC loss
+is **bit-identical** to gloo (`12.021415908336417`).
+
+### Fix (`e166c21`)
+
+`probe_ipc_capability()` no longer calls `reduce_tensor()`. The only
+capability that matters for the classic container-friendly handle path
+is that memory is not `expandable_segments`; that is now checked from
+`PYTORCH_CUDA_ALLOC_CONF` / `PYTORCH_ALLOC_CONF` — a non-destructive
+config check. `ensure_ipc_usable()` still fails fast. `test_cuda_ipc.py`
+13/13. GPU-verified: IPC-default colocate tiny passes with the real
+fixed probe.
+
+### Note
+
+Round 8's `--full` (at `4fce80d`, the gloo-default branch) reported
+`test_colocate_ipc` green, yet the probe hang reproduced on **3 separate
+pods** here — the CUDA-IPC-under-MPS interaction appears host/driver
+dependent. The non-destructive probe removes the destructive call
+outright, so it is strictly safer regardless.
+
+### Still pending
+
+The 4×H100 `--full` matrix re-run with CUDA IPC as the default + this
+fix (round 8's matrix ran at `4fce80d`, before IPC became the default).
