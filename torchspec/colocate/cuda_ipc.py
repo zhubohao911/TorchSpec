@@ -43,10 +43,12 @@ inject ``expandable_segments`` into the trainer/engine actors, so IPC
 stays on the capability-free classic-handle path. (IPC already avoids
 the H<->D staging churn that ``expandable_segments`` was mitigating.)
 
-:func:`probe_ipc_capability` still runs a ``reduce_tensor`` smoke check
-at construction; the connector/fetcher **fail fast** with an actionable
-message if IPC was requested but is unavailable, rather than silently
-falling back (a one-sided fallback would desync the wire protocol).
+:func:`probe_ipc_capability` runs a **non-destructive** capability check
+at construction (it does *not* share a CUDA tensor — a ``reduce_tensor``
+smoke test wedges CUDA under MPS; see that function's docstring). The
+connector/fetcher **fail fast** with an actionable message if IPC is
+unavailable, rather than silently falling back (a one-sided fallback
+would desync the wire protocol).
 
 Wire protocol
 -------------
@@ -91,43 +93,46 @@ def ipc_enabled() -> bool:
 
 
 def probe_ipc_capability() -> Tuple[bool, str]:
-    """Probe whether CUDA IPC can actually be used on this process.
+    """Probe whether CUDA IPC can be used on this process.
 
-    Returns ``(ok, reason)``. Cached after the first call. ``ok`` is
-    False when CUDA is absent, or when ``reduce_tensor`` raises — most
-    commonly because ``expandable_segments`` is active (its cuMemMap
-    segments are not IPC-shareable).
+    Returns ``(ok, reason)``. Cached after the first call.
+
+    This is a **non-destructive** check. It deliberately does *not* run a
+    ``reduce_tensor`` smoke test: sharing a CUDA tensor via IPC and then
+    immediately discarding it (no consumer ever maps it) leaves PyTorch's
+    CUDA-IPC producer-side machinery in a state that wedges subsequent
+    CUDA work **under MPS** -- the engine's sglang forward hangs.
+    (Diagnosed 2026-05-21 on 1xH100: the probe, not the transport, caused
+    the colocate IPC hang; skipping it makes the full IPC path pass.)
+
+    The only capability that matters for the classic, container-friendly
+    CUDA IPC handle path is that memory is **not** ``expandable_segments``
+    (those force the ``pidfd_getfd`` path, which needs ``CAP_SYS_PTRACE``).
+    The colocate path already guarantees this -- ``inference/factory.py``
+    and ``ray/train_group.py`` skip the ``expandable_segments`` allocator
+    config whenever IPC is the transport -- so a config check suffices.
     """
     global _probe_cache
     if _probe_cache is not None:
         return _probe_cache
-
     try:
         import torch
 
         if not torch.cuda.is_available():
             _probe_cache = (False, "CUDA not available")
             return _probe_cache
-
-        from torch.multiprocessing.reductions import reduce_tensor
-
-        scratch = torch.empty(8, dtype=torch.float32, device="cuda")
-        # reduce_tensor -> (rebuild_fn, args); this is the call that
-        # invokes the storage's _share_cuda_ and raises on expandable
-        # segments / unsupported platforms.
-        reduce_tensor(scratch)
-        del scratch
+        for _ev in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF"):
+            if "expandable_segments:true" in os.environ.get(_ev, "").lower():
+                _probe_cache = (False, (
+                    _ev + " enables expandable_segments, which forces CUDA "
+                    "IPC onto the pidfd_getfd path (needs CAP_SYS_PTRACE). "
+                    "Drop expandable_segments, or set TORCHSPEC_COLOCATE_IPC=0 "
+                    "for the gloo CPU-staged transport."
+                ))
+                return _probe_cache
         _probe_cache = (True, "ok")
     except Exception as e:  # pragma: no cover - needs a real GPU
-        hint = ""
-        if "expandable" in repr(e).lower() or "cuMemMap" in repr(e):
-            hint = (
-                " — likely PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True; "
-                "CUDA IPC needs plain cudaMalloc memory. Drop expandable_"
-                "segments for the colocate run, or set TORCHSPEC_COLOCATE_IPC=0"
-                " to use the gloo transport."
-            )
-        _probe_cache = (False, f"{e!r}{hint}")
+        _probe_cache = (False, repr(e))
     return _probe_cache
 
 
