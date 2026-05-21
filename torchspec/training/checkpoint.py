@@ -170,7 +170,11 @@ def load(actor: Any) -> dict[str, Any] | None:
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
         try:
-            dcp.load(state_dict=optim_state_dict, checkpoint_id=str(optimizer_dir), process_group=actor.dp_group)
+            dcp.load(
+                state_dict=optim_state_dict,
+                checkpoint_id=str(optimizer_dir),
+                process_group=actor.dp_group,
+            )
             logger.info(f"Loaded optimizer from {optimizer_dir}")
         except Exception as e:
             logger.warning(f"Failed to load optimizer from {optimizer_dir}: {e}")
@@ -185,7 +189,11 @@ def load(actor: Any) -> dict[str, Any] | None:
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
         lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
         try:
-            dcp.load(state_dict=lr_scheduler_state_dict, checkpoint_id=str(lr_scheduler_dir), process_group=actor.dp_group)
+            dcp.load(
+                state_dict=lr_scheduler_state_dict,
+                checkpoint_id=str(lr_scheduler_dir),
+                process_group=actor.dp_group,
+            )
             logger.info(f"Loaded LR scheduler from {lr_scheduler_dir}")
         except Exception as e:
             logger.warning(f"Failed to load LR scheduler from {lr_scheduler_dir}: {e}")
@@ -234,7 +242,9 @@ def _restore_fp32_master_params(actor: Any, optim_dir: Path) -> None:
             ]
             optim_state = OptimizerState(actor.model, opt)
             optim_sd = {"optim_state": optim_state}
-            dcp.load(state_dict=optim_sd, checkpoint_id=str(optim_dir), process_group=actor.dp_group)
+            dcp.load(
+                state_dict=optim_sd, checkpoint_id=str(optim_dir), process_group=actor.dp_group
+            )
             for group, fresh_group in zip(opt.optimizer.param_groups, fresh_param_groups):
                 params = group["params"]
                 group.clear()
@@ -324,7 +334,11 @@ def save(actor: Any, step: int) -> None:
     if hasattr(actor, "lr_scheduler") and actor.lr_scheduler is not None:
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
         lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
-        dcp.save(lr_scheduler_state_dict, checkpoint_id=str(lr_scheduler_dir), process_group=actor.dp_group)
+        dcp.save(
+            lr_scheduler_state_dict,
+            checkpoint_id=str(lr_scheduler_dir),
+            process_group=actor.dp_group,
+        )
 
     if dist.get_rank() == 0:
         rng_state = {"torch": torch.get_rng_state()}

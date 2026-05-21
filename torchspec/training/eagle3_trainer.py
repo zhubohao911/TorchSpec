@@ -120,8 +120,7 @@ class Eagle3Trainer(Trainer):
             if isinstance(m, torch.nn.Linear) and "midlayer" in name
         ]
         logger.warning(
-            f"[Rank {self.dp_rank}] [TS-COLOCATE-TRACE-T] "
-            "eagle3.init_model: BEFORE apply_fsdp2"
+            f"[Rank {self.dp_rank}] [TS-COLOCATE-TRACE-T] eagle3.init_model: BEFORE apply_fsdp2"
         )
         eagle3_model = apply_fsdp2(
             eagle3_model,

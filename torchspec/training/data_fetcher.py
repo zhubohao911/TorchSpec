@@ -725,9 +725,7 @@ class ColocateDataset(IterableDataset):
                         data[key] = tensor.unsqueeze(0)
 
             yield_count += 1
-            logger.debug(
-                f"[colocate] yielding batch {yield_count}, keys={list(data.keys())}"
-            )
+            logger.debug(f"[colocate] yielding batch {yield_count}, keys={list(data.keys())}")
             yield data
 
 

@@ -37,6 +37,7 @@ from torch.distributed.checkpoint.state_dict import (
 )
 from torch.distributed.device_mesh import init_device_mesh
 
+from torchspec.colocate.determinism import seed_everything
 from torchspec.config.mooncake_config import MooncakeConfig
 from torchspec.data.utils import DataCollatorWithPadding
 from torchspec.training import checkpoint
@@ -54,7 +55,6 @@ from torchspec.utils.distributed import (
     get_usp_device_mesh,
     get_usp_grad_sync_mesh,
 )
-from torchspec.colocate.determinism import seed_everything
 from torchspec.utils.logging import logger
 from torchspec.utils.processing import get_assistant_token_ids
 from torchspec.utils.profiling import TrainProfiler
@@ -189,9 +189,7 @@ class Trainer(abc.ABC):
             )
             from torch.distributed.device_mesh import DeviceMesh
 
-            self.mesh = DeviceMesh.from_group(
-                trainer_pg, "cuda", mesh_dim_names=("dp",)
-            )
+            self.mesh = DeviceMesh.from_group(trainer_pg, "cuda", mesh_dim_names=("dp",))
             self.dp_group = trainer_pg
             mesh_kind = f"1D-colocate-sub({trainer_backend})"
         else:
@@ -214,9 +212,7 @@ class Trainer(abc.ABC):
         # every transition between init phases. (See
         # docs/colocate/implementation_log.md §"RunPod debug session
         # #2" for why this is here.)
-        logger.warning(
-            f"[Rank {rank}] [TS-COLOCATE-TRACE-T] _setup_device_mesh DONE"
-        )
+        logger.warning(f"[Rank {rank}] [TS-COLOCATE-TRACE-T] _setup_device_mesh DONE")
 
     def _get_init_weight_context_manager(self):
         """Meta-device context for non-rank-0 processes to save memory."""
@@ -312,9 +308,7 @@ class Trainer(abc.ABC):
                 )
             if usp_enabled:
                 # Defence in depth: TrainerActor.init also rejects this.
-                raise ValueError(
-                    "USP + colocate (transfer_mode='nccl') is not supported."
-                )
+                raise ValueError("USP + colocate (transfer_mode='nccl') is not supported.")
 
             nccl_fetcher = self._build_nccl_fetcher(torch.device("cuda", gpu_device))
             self.data_fetcher = ColocateDataFetcher(
@@ -335,7 +329,8 @@ class Trainer(abc.ABC):
             logger.info(
                 "[Rank %s] Colocate (NCCL) data fetcher initialised "
                 "(batch_size=%s, paired_engine_rank=%s)",
-                self.dp_rank, per_dp_rank_batch_size,
+                self.dp_rank,
+                per_dp_rank_batch_size,
                 self._union_world.paired_global_rank,
             )
             return
@@ -426,7 +421,8 @@ class Trainer(abc.ABC):
             logger.info(
                 "[Rank %s] Colocate (NCCL) eval data fetcher initialised "
                 "(batch_size=%s, paired_engine_rank=%s)",
-                self.dp_rank, per_dp_rank_batch_size,
+                self.dp_rank,
+                per_dp_rank_batch_size,
                 self._union_world.paired_global_rank,
             )
             return

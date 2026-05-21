@@ -152,9 +152,9 @@ def fsdp2_load_full_state_dict(model, full_state, device_mesh, cpu_offload):
     mesh_group = device_mesh.get_group() if device_mesh is not None else None
     src_rank = dist.get_global_rank(mesh_group, 0) if mesh_group is not None else 0
     logger.warning(
-        "[TS-COLOCATE-TRACE-T] fsdp2_load_full_state_dict: "
-        "ENTER mesh_group=%s src_rank=%s",
-        mesh_group, src_rank,
+        "[TS-COLOCATE-TRACE-T] fsdp2_load_full_state_dict: ENTER mesh_group=%s src_rank=%s",
+        mesh_group,
+        src_rank,
     )
 
     if dist.get_rank() == 0:
@@ -191,16 +191,15 @@ def fsdp2_load_full_state_dict(model, full_state, device_mesh, cpu_offload):
     logger.warning(
         "[TS-COLOCATE-TRACE-T] fsdp2_load_full_state_dict: BEFORE "
         "set_model_state_dict (mesh_size=%s, broadcast_from_rank0=%s)",
-        mesh_size, broadcast_from_rank0,
+        mesh_size,
+        broadcast_from_rank0,
     )
     if broadcast_from_rank0 and mesh_group is not None:
         with _default_pg_override(mesh_group):
             set_model_state_dict(model, full_state, options=options)
     else:
         set_model_state_dict(model, full_state, options=options)
-    logger.warning(
-        "[TS-COLOCATE-TRACE-T] fsdp2_load_full_state_dict: AFTER set_model_state_dict"
-    )
+    logger.warning("[TS-COLOCATE-TRACE-T] fsdp2_load_full_state_dict: AFTER set_model_state_dict")
 
     # CRITICAL: pass mesh_group to dist.broadcast so the broadcast
     # only spans the trainer sub-mesh, not the 2N-rank default PG.
@@ -208,9 +207,7 @@ def fsdp2_load_full_state_dict(model, full_state, device_mesh, cpu_offload):
     # participation in the buffer broadcast.
     for _name, buf in model.named_buffers():
         dist.broadcast(buf, src=src_rank, group=mesh_group)
-    logger.warning(
-        "[TS-COLOCATE-TRACE-T] fsdp2_load_full_state_dict: AFTER buffer broadcasts"
-    )
+    logger.warning("[TS-COLOCATE-TRACE-T] fsdp2_load_full_state_dict: AFTER buffer broadcasts")
 
     if is_cpu_offload:
         model.to("cpu", non_blocking=True)
