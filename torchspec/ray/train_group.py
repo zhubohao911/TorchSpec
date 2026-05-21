@@ -119,12 +119,8 @@ class RayTrainGroup:
             # carry expandable_segments:True (the colocate tests set it)
             # and the trainer actor would otherwise inherit it.
             if not ipc_enabled():
-                env_vars.setdefault(
-                    "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
-                )
-                env_vars.setdefault(
-                    "PYTORCH_ALLOC_CONF", "expandable_segments:True"
-                )
+                env_vars.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+                env_vars.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
             else:
                 env_vars["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
                 env_vars["PYTORCH_ALLOC_CONF"] = "expandable_segments:False"

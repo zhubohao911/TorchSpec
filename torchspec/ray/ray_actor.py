@@ -101,9 +101,7 @@ class RayActor:
             ]
             if mps_pipe:
                 pipe_file = os.path.join(mps_pipe, "control")
-                diag.append(
-                    f"  pipe_file_exists       = {os.path.exists(pipe_file)} ({pipe_file})"
-                )
+                diag.append(f"  pipe_file_exists       = {os.path.exists(pipe_file)} ({pipe_file})")
             if mps_log:
                 ctl_log = os.path.join(mps_log, "control.log")
                 if os.path.exists(ctl_log):
