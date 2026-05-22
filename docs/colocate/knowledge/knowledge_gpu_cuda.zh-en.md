@@ -13,8 +13,9 @@
 CUDA 相关的术语（SM、context、stream、MPS daemon、allocator、设备内拷贝……）
 觉得"过得太快"的人。
 
-> ⚠️ **Cross-check — updated 2026-05-21.** Two claims below are now
-> wrong and flagged inline:
+> ⚠️ **Cross-check — updated 2026-05-22.** Two GPU/CUDA-shaped claims
+> below are now wrong and flagged inline; one CUDA-IPC contract has
+> been added on top (rounds 7 + 12).
 > 1. **"Intra-device NCCL P2P is cheap"** — there is no such thing. NCCL
 >    refuses a communicator with two ranks on one physical GPU, so
 >    same-GPU NCCL `send`/`recv` cannot run at all. The colocate
@@ -26,12 +27,21 @@ CUDA 相关的术语（SM、context、stream、MPS daemon、allocator、设备�
 >    longer true. The default **CUDA IPC** transport needs plain
 >    `cudaMalloc` memory and the colocate path **disables**
 >    `expandable_segments`; only the gloo fallback wants it.
+> 3. **CUDA-IPC transfer is a *per-tensor handshake*.** `cudaIpcGetMemHandle`
+>    + `cudaIpcOpenMemHandle` + a D→D copy + a one-byte ack — *one round
+>    per tensor*. If the trainer declares fewer tensor specs than the
+>    engine emits, the engine's last `dist.recv` waits forever. Round 12
+>    DFlash hang #2 was exactly this. See [`knowledge.zh-en.md`](knowledge.zh-en.md)
+>    §9 "Contract: the engine owns the wire payload" for the full
+>    bilingual write-up.
 >
-> The MPS, context, stream, allocator, and CUDA-VMM material is all still
-> accurate. See [`transport_benchmark.md`](transport_benchmark.md) and
-> [`implementation_log.md`](implementation_log.md) rounds 1 / 7 / 9.
+> The MPS, context, stream, allocator, and CUDA-VMM material is all
+> still accurate. See [`transport_benchmark.md`](transport_benchmark.md)
+> and [`implementation_log.md`](implementation_log.md) rounds 1 / 7 / 9
+> / 12.
 >
-> 🇨🇳 **交叉核对 —— 2026-05-21 更新。** 下文有两处现在是错的，已就地标注：
+> 🇨🇳 **交叉核对 —— 2026-05-22 更新。** 下文有两处 GPU/CUDA 层面的描述
+> 现在是错的，已就地标注；rounds 7 + 12 又补出一条 CUDA-IPC 的契约：
 > ① **"同卡 NCCL P2P 几乎免费"** —— 根本不存在这回事。NCCL 拒绝"同一张
 > 物理 GPU 上两个 rank"的 communicator，同卡 NCCL `send`/`recv` 压根跑
 > 不起来。colocate 的 hidden-state 传输是 **CUDA IPC**（默认；句柄交换后
@@ -40,6 +50,12 @@ CUDA 相关的术语（SM、context、stream、MPS daemon、allocator、设备�
 > ② **"`expandable_segments:True` 是 colocate 必选项"** —— 不再成立。
 > 默认的 **CUDA IPC** 传输需要普通 `cudaMalloc` 显存，colocate 路径会
 > **关闭** `expandable_segments`；只有 gloo 回退才需要它。
+> ③ **CUDA-IPC 传输是*逐 tensor 握手*。** `cudaIpcGetMemHandle` +
+> `cudaIpcOpenMemHandle` + 一次 D→D 拷贝 + 一字节 ack —— *每个 tensor
+> 一轮*。如果 trainer 声明的 tensor 数比 engine 实际发送的少，engine
+> 最后一次 `dist.recv` 会**永远阻塞**。round 12 的 DFlash 第二个挂死就
+> 是这种情况。完整契约见 [`knowledge.zh-en.md`](knowledge.zh-en.md) §9
+> "契约：wire payload 由引擎决定"（中英双语完整说明）。
 > MPS、context、stream、allocator、CUDA 虚拟内存等内容依然正确。
 
 ---

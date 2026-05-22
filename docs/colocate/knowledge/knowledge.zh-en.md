@@ -1,6 +1,16 @@
 # Colocate Mode — Knowledge & Background （中英双语对照）
 
-> 说明：本文是 [`knowledge.md`](knowledge.md) 的中英双语学习版。原文段落保留在前，中文翻译/解释紧跟其后（以 `🇨🇳` 引导）。代码块、表格、链接保持不变。
+> 说明：本文是 colocate（训练 + 推理共置）的概念背景文档，中英双语对照版本。
+> 原文段落保留在前，中文翻译 / 解释紧跟其后（以 `🇨🇳` 引导）。代码块、表格、
+> 链接保持不变。配套补充见 [`knowledge_gpu_cuda.zh-en.md`](knowledge_gpu_cuda.zh-en.md)
+> （GPU / CUDA 相关概念展开）。
+>
+> Bilingual conceptual background for the colocate (training + inference
+> on the same GPU) work. Each English paragraph is followed by its Chinese
+> translation (prefixed `🇨🇳`); code blocks, tables, and links are
+> unchanged. Companion file:
+> [`knowledge_gpu_cuda.zh-en.md`](knowledge_gpu_cuda.zh-en.md) (GPU /
+> CUDA concepts in depth).
 
 ---
 
@@ -17,33 +27,69 @@
 This document does **not** describe the implementation. See
 [`implementation.md`](implementation.md) for the phased plan.
 
-> ⚠️ **Cross-check — updated 2026-05-21.** This doc explains the *original*
-> design, in which hidden states cross via **NCCL P2P, on-device,
-> GPU-local `send`/`recv`**. That part did not survive contact with
-> reality: NCCL hard-rejects a communicator with two ranks on one
-> physical GPU (`ncclInvalidUsage`, "Duplicate GPU detected"), so
-> same-GPU NCCL P2P is **impossible**. The shipped hidden-state transport
-> is **CUDA IPC zero-copy (default)** with **gloo CPU-staging** as the
-> opt-out fallback — both over a gloo `meta_group`. The union NCCL world,
-> MPS, fractional bundles, and memory-cap concepts below are all still
-> accurate. See [`implementation_log.md`](implementation_log.md) rounds 1
-> / 7 / 9 / 10, [`transport_benchmark.md`](transport_benchmark.md), and
-> [`transport_optimization.md`](transport_optimization.md) (the transport
-> kernel-vs-protocol investigation + MPS-validated A/B). The original
-> NCCL-P2P text is kept for the design rationale and flagged inline.
+> ⚠️ **Cross-check — updated 2026-05-22.** Two parts of the original
+> design are now superseded; the conceptual material below otherwise
+> stays accurate.
 >
-> 🇨🇳 **交叉核对 —— 2026-05-21 更新。** 本文讲的是*最初*的设计：hidden
-> states 通过 **NCCL P2P、设备内、GPU 本地的 `send`/`recv`** 传递。这部分
-> 后来被证明行不通：NCCL 会硬拒绝"同一张物理 GPU 上有两个 rank"的
-> communicator（报 `ncclInvalidUsage`、"Duplicate GPU detected"），所以
-> 同卡 NCCL P2P **不可能实现**。实际落地的 hidden-state 传输是
-> **CUDA IPC 零拷贝（默认）** + **gloo CPU 中转（可选回退）**，都走 gloo
-> `meta_group`。下文关于 union NCCL world、MPS、分数 bundle、显存上限的
-> 概念依然正确。详见 [`implementation_log.md`](implementation_log.md) 的
-> round 1 / 7 / 9 / 10、[`transport_benchmark.md`](transport_benchmark.md)
-> 以及 [`transport_optimization.md`](transport_optimization.md)（传输层
-> "要不要写 kernel" 的调查 + MPS 验证过的 A/B）。原 NCCL-P2P 文字保留以
-> 说明设计思路，并在文中就地标注。
+> 1. **Same-GPU NCCL P2P does not exist.** NCCL hard-rejects a
+>    communicator with two ranks on one physical GPU
+>    (`ncclInvalidUsage`, "Duplicate GPU detected"), so same-GPU NCCL
+>    `send`/`recv` cannot run at all. The shipped hidden-state transport
+>    is **CUDA IPC zero-copy (default)** with **gloo CPU-staging** as
+>    the opt-out fallback — both over a gloo `meta_group`. The "D→D copy
+>    is nearly free" intuition is correct; it just isn't reached via
+>    NCCL.
+> 2. **Two colocate contracts caught silent deadlocks in rounds 7 and
+>    12.** Both are easy to break and worth stating explicitly (§6
+>    "Contract: the default PG in colocate is the union world" and §9
+>    "Contract: the engine owns the wire payload" cover them in full):
+>    - **The default PG in colocate is the union world.** Any
+>      trainer-only collective with no `group=` argument
+>      (`dist.barrier`, `dist.broadcast`, `dist.all_reduce`,
+>      `dist.new_group`, …) defaults to all `2N` ranks. The engine
+>      ranks never enter trainer-only paths, so the collective hangs
+>      forever. **Scope every trainer-only collective to a trainer-only
+>      group** (`get_gloo_group()` or similar).
+>    - **The trainer-side tensor spec is the engine's contract, not a
+>      training-side preference.** The CUDA-IPC transport is a
+>      per-tensor handshake; if the trainer declares fewer tensors than
+>      the engine sends, the engine's last `dist.recv` blocks forever.
+>      The trainer must mirror what the engine actually emits.
+>
+> See [`implementation_log.md`](implementation_log.md) rounds 1 / 7 / 9
+> / 10 / 12, [`transport_benchmark.md`](transport_benchmark.md), and
+> [`transport_optimization.md`](transport_optimization.md). The
+> original NCCL-P2P text is kept for the design rationale and flagged
+> inline.
+>
+> 🇨🇳 **交叉核对 —— 2026-05-22 更新。** 原始设计有两点已经被替换；下文的
+> 概念性内容总体仍然成立。
+>
+> 1. **同卡 NCCL P2P 根本跑不起来。** NCCL 硬拒绝"同一张物理 GPU 上两个
+>    rank"的 communicator（报 `ncclInvalidUsage`、"Duplicate GPU
+>    detected"），同卡 NCCL `send`/`recv` 完全无法运行。实际落地的
+>    hidden-state 传输是 **CUDA IPC 零拷贝（默认）** + **gloo CPU 中转
+>    （可选回退）**，都走 gloo `meta_group`。"设备内拷贝几乎免费"这个
+>    直觉本身没错 —— 只是不经由 NCCL 达成。
+> 2. **round 7 / round 12 中各捕到的两条 colocate 契约。** 容易踩坑，
+>    必须明示（§6 "契约：colocate 模式下，默认 PG 就是 union world" 和
+>    §9 "契约：wire payload 由引擎决定" 给出完整描述）：
+>    - **colocate 模式下，默认 PG 就是 union world。** trainer-only 路径
+>      里任何不带 `group=` 的 collective（`dist.barrier`、`dist.broadcast`、
+>      `dist.all_reduce`、`dist.new_group`……）都会落到全部 `2N` 个 rank
+>      上。engine rank 永远不会进入 trainer-only 代码路径，于是这种 collective
+>      会**永远等不到对端，发生静默死锁**。**所有 trainer-only collective
+>      都必须显式指定 trainer-only 的 group**（`get_gloo_group()` 即可）。
+>    - **trainer 侧的 tensor spec 是 engine 的契约，不是 training 侧的偏
+>      好。** CUDA-IPC 传输是逐 tensor 握手 —— 如果 trainer 声明的 tensor
+>      数 *少于* engine 实际发送的数量，engine 最后一次 `dist.recv` 会
+>      **永远阻塞**。trainer 必须**镜像 engine 实际产出**，不是镜像本地
+>      config flag。
+>
+> 详见 [`implementation_log.md`](implementation_log.md) 的 round 1 / 7 /
+> 9 / 10 / 12、[`transport_benchmark.md`](transport_benchmark.md) 以及
+> [`transport_optimization.md`](transport_optimization.md)。原 NCCL-P2P
+> 文字保留以说明设计思路，并在文中就地标注。
 
 🇨🇳 本文**不**讨论具体实现。分阶段实施方案见 [`implementation.md`](implementation.md)。
 
@@ -623,6 +669,89 @@ recv can serialise behind each other.
 
 🇨🇳 这是个小但重要的细节 —— 不加这一手，FSDP 的 all-gather 和我们的 recv 会互相排队。
 
+### Contract: the default PG in colocate is the union world
+### 契约：colocate 模式下，默认 PG 就是 union world
+
+This is the part of the union-world setup that has bitten us the most. In a
+non-colocate run, `dist.init_process_group(backend="nccl", world_size=N)`
+gives you a default process group that contains exactly the `N` trainer
+ranks; bare collectives (`dist.barrier()`, `dist.broadcast(t, src=0)`,
+`dist.all_reduce(t)`) are safe because they're effectively trainer-only by
+construction.
+
+🇨🇳 这是 union-world 这套机制中**最容易踩雷**的地方。在**非 colocate** 模式下，
+`dist.init_process_group(backend="nccl", world_size=N)` 给你的默认进程组刚好就
+是 `N` 个训练 rank；不带 `group=` 的裸 collective（`dist.barrier()`、
+`dist.broadcast(t, src=0)`、`dist.all_reduce(t)`）天然是 trainer-only，因此
+没问题。
+
+**In colocate, the default PG is the `2N`-rank union world** (trainer ranks
+`[0, N)` + engine ranks `[N, 2N)`). The engine ranks live inside sglang and
+never enter trainer-only code paths. So a bare collective in a trainer-only
+method:
+
+🇨🇳 **但在 colocate 模式下，默认 PG 是 `2N` 个 rank 的 union world**（训练
+rank `[0, N)` + 引擎 rank `[N, 2N)`）。引擎 rank 都待在 sglang 内部，永远
+不会进入 trainer-only 的代码路径。所以在 trainer-only 方法里写一个裸
+collective：
+
+```python
+dist.barrier()                       # ← waits for all 2N ranks
+dist.broadcast(param.data, src=0)    # ← engine ranks never reach this call
+dist.all_reduce(loss_sum)            # ← deadlock the moment trainer hits it
+```
+
+waits for `2N` arrivals, only `N` ever arrive, and the trainer hangs
+silently. This is the single most common shape of colocate deadlock. It was
+the root cause of:
+
+🇨🇳 它会等 `2N` 个 rank 到齐，但实际只有 `N` 个会到，于是训练侧**静默挂死**。
+这是 colocate 死锁最常见的一种形态，下面这些 bug 都出自同一形状：
+
+* Round 7 — `set_model_state_dict` hard-codes `group=None`; fixed by
+  installing the trainer-only mesh group as the default PG for the duration
+  of the call (`_default_pg_override`).
+
+  🇨🇳 **Round 7** —— `set_model_state_dict` 内部写死了 `group=None`；修复
+  方式是在调用期间把 trainer-only 的 mesh group 临时装为默认 PG
+  （`_default_pg_override`）。
+
+* Round 7 audit — `dcp.save` / `dcp.load` (7 sites) had the same shape;
+  fixed by passing `process_group=actor.dp_group` explicitly.
+
+  🇨🇳 **Round 7 复审** —— `dcp.save` / `dcp.load`（7 个调用点）是同一种形状；
+  修复方式是显式传 `process_group=actor.dp_group`。
+
+* Round 12 — `DFlashTrainer._init_target_lm_head` (`dist.barrier` +
+  `dist.broadcast`) and the per-position metric reduction (3 ×
+  `dist.all_reduce`) all defaulted to the union PG; fixed by scoping all 5
+  to `get_gloo_group()`. (`Eagle3Trainer` already carried this fix; the
+  DFlash trainer was comment-labelled "same as Eagle3Trainer" but had
+  never received it.)
+
+  🇨🇳 **Round 12** —— `DFlashTrainer._init_target_lm_head`（`dist.barrier`
+  + `dist.broadcast`）和 per-position 指标归约（3 个 `dist.all_reduce`）共 5
+  处全部落到 union PG 上；修复方式是把这 5 处统一指定 `group=get_gloo_group()`。
+  （`Eagle3Trainer` 早就打过这个补丁；DFlash trainer 的注释虽写着 "same as
+  Eagle3Trainer"，但其实没有同步过这条修复。）
+
+**Rule.** In colocate, every trainer-only collective must pass an explicit
+`group=`. The safe default is `get_gloo_group()` — the trainer-only gloo
+group — which in disagg mode is the whole trainer world (so the change is
+a no-op outside colocate) and in colocate is exactly the `N` trainer ranks
+that will participate. External libraries that hard-code `group=None`
+(`torch.distributed.checkpoint`, `set_model_state_dict`, …) need either a
+`process_group=` argument passed through, or the trainer-only group
+temporarily installed as the default PG for the duration of the call.
+
+🇨🇳 **规则**。在 colocate 模式下，**所有 trainer-only collective 必须显式带
+`group=`**。安全的默认值是 `get_gloo_group()` —— 这个 trainer-only gloo
+group 在 disagg 模式下就是整个训练 world（所以这条修改在 colocate 之外是 no-op），
+在 colocate 模式下正好是会参与的那 `N` 个训练 rank。**对于写死 `group=None`
+的外部库**（`torch.distributed.checkpoint`、`set_model_state_dict` 等），要么
+透传一个 `process_group=` 参数下去，要么在调用期间临时把 trainer-only group
+安装为默认 PG。
+
 ---
 
 ## 7. Memory isolation under MPS (the "soft caps" story)
@@ -785,8 +914,92 @@ A few things to internalise:
 
 ---
 
-## 9. Glossary
-## 9. 术语表
+## 9. Contract: the engine owns the wire payload
+## 9. 契约：wire payload 由引擎决定
+
+The hidden-state transport (CUDA IPC default, gloo fallback) is a
+**per-tensor handshake**:
+
+🇨🇳 hidden-state 传输（默认 CUDA IPC、回退 gloo CPU 中转）是一次**逐 tensor
+的握手**：
+
+* The **engine** ships one IPC handle per tensor it produced. It walks the
+  payload keys in `sorted(keys)` order and, for each one, opens an IPC handle,
+  sends the handle blob (over gloo), then **blocks on `dist.recv`** waiting
+  for the trainer's ack before moving to the next tensor.
+
+  🇨🇳 **引擎侧**：对自己产出的每一个 tensor 都发一个 IPC handle。它按
+  `sorted(keys)` 顺序遍历 payload，每个 tensor 走的流程是：打开一个 IPC handle
+  → 把 handle blob 经 gloo 发过去 → **阻塞在 `dist.recv` 上等 trainer 的 ack**
+  → 再处理下一个 tensor。
+
+* The **trainer** walks the same `sorted(keys)` order, pre-allocates one recv
+  buffer per *declared* spec, maps the handle, does the D→D copy, and sends
+  one ack per spec.
+
+  🇨🇳 **训练侧**：按完全相同的 `sorted(keys)` 顺序走 —— 对每一个**自己声明的**
+  spec 预分配一个 recv buffer，映射 handle，做一次 D→D 拷贝，然后每个 spec 回
+  一个 ack。
+
+So the count of tensors *declared* by the trainer must equal the count of
+tensors *sent* by the engine. If the trainer declares fewer keys, the engine
+runs off the end of its loop and the last `dist.recv` blocks forever — silent
+step-0 deadlock, no traceback. This is exactly what round 12's hang #2 was:
+the engine sent `hidden_states`, `input_ids`, `last_hidden_states` (3
+tensors); the trainer derived its `tensor_specs` from
+`store_last_hidden_states` (= `false` in DFlash's config) and declared only
+the first two; the engine's 3rd `dist.recv` hung.
+
+🇨🇳 因此，训练侧**声明**的 tensor 数必须等于引擎**实际发送**的 tensor 数。
+一旦训练侧声明得少，引擎就会跑到自己循环的末尾，最后一次 `dist.recv`
+**永远阻塞** —— step 0 静默挂死，没有任何 traceback。这正是 **round 12 的
+hang #2**：引擎发了 `hidden_states`、`input_ids`、`last_hidden_states` 共
+3 个 tensor；训练侧的 `_build_tensor_specs` 根据 `store_last_hidden_states`
+（DFlash 配置里是 `false`）只声明了前两个；于是引擎的第 3 次 `dist.recv`
+挂死。
+
+The takeaway is a contract about *whose decision the wire payload is*:
+
+🇨🇳 真正的教训是一条关于"wire payload 到底由谁决定"的契约：
+
+> The trainer-side `tensor_specs` is a **contract that must mirror what the
+> engine actually sends**, not what a training-side config says it should
+> want. `store_last_hidden_states` is a training-side preference; the wire
+> payload is decided by the engine + sglang patch.
+>
+> 🇨🇳 训练侧的 `tensor_specs` 是一条**必须镜像引擎实际发送内容**的契约，
+> 而不是镜像训练端 config 想要什么。`store_last_hidden_states` 是训练侧的
+> 偏好；wire payload 是由 **引擎 + sglang patch** 决定的。
+
+Concretely the colocate engine sets `enable_return_hidden_states=True`
+unconditionally, so sglang's `_send_hidden_states_to_nccl` always ships
+`last_hidden_states` whenever it is non-`None`. The trainer must therefore
+always declare it, even when the local draft trainer (DFlash) does not
+consume it — the cost is one extra `(seq_len, hidden_size)` bf16 buffer per
+step (~3 MB), negligible.
+
+🇨🇳 具体来说，colocate 模式下引擎**无条件**地设置 `enable_return_hidden_states=True`，
+所以 sglang 的 `_send_hidden_states_to_nccl` 只要 `last_hidden_states`
+非 `None` 就会发送。训练侧必须永远声明它，**即使本地 draft trainer
+（DFlash）不消费它也要声明** —— 代价只是每步多一个 `(seq_len, hidden_size)`
+的 bf16 buffer（约 3 MB），可以忽略。
+
+Better still — and a tracked follow-up — would be for the engine to
+**announce** its key set + shapes on the metadata channel each step, so the
+trainer builds its recv buffers from the engine's announcement rather than a
+local config. The current fix (always declare `last_hidden_states`) closes
+the bug at the cost of a static contract; the announcement design would
+close the entire class of bug.
+
+🇨🇳 更彻底的方案（已记为 follow-up）：让引擎在每一步的元数据通道上**主动
+广播**自己的 key 集合 + shape，训练侧根据这份广播来分配 recv buffer，而不
+是依赖本地 config。当前的修复（永远声明 `last_hidden_states`）以一个**静态
+契约**为代价关掉了这条 bug；广播式设计能从根本上消灭这一类 bug。
+
+---
+
+## 10. Glossary
+## 10. 术语表
 
 | Term | One-liner |
 |---|---|
@@ -826,12 +1039,12 @@ A few things to internalise:
 
 ---
 
-## 10. Recommended reading order before implementing
-## 10. 动手实现前的推荐阅读顺序
+## 11. Recommended reading order before implementing
+## 11. 动手实现前的推荐阅读顺序
 
-1. **This document** end-to-end. Especially §3 (MPS), §4 (bundles), §6 (union world).
+1. **This document** end-to-end. Especially §3 (MPS), §4 (bundles), §6 (union world, including the default-PG contract), and §9 (engine wire-payload contract).
 
-   🇨🇳 通读**本文**，特别是 §3（MPS）、§4（bundles）、§6（union world）。
+   🇨🇳 通读**本文**，特别是 §3（MPS）、§4（bundles）、§6（union world，包括默认 PG 契约）和 §9（引擎 wire-payload 契约）。
 
 2. Existing TorchSpec code:
    - [torchspec/ray/placement_group.py](../../torchspec/ray/placement_group.py) — read all of `create_placement_groups`.

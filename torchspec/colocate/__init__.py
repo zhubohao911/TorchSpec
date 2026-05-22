@@ -3,7 +3,7 @@
 #
 # Public surface for the colocate (training + inference on the same GPU) mode.
 # See docs/colocate/implementation.md for the phased plan and
-# docs/colocate/knowledge.md for background concepts.
+# docs/colocate/knowledge/knowledge.zh-en.md for background concepts.
 
 from torchspec.colocate.config import (
     SUPPORTED_COMBINATIONS,
