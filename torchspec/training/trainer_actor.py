@@ -44,14 +44,6 @@ from torchspec.utils.logging import setup_file_logging
 _COLOCATE_UNION_WORLD_PORT_OFFSET = 5000
 
 
-# Port offset used by the colocate union-world rendezvous so it doesn't
-# clobber the trainer's own MASTER_PORT (used by FSDP / gloo
-# initialisation when transfer_mode == 'mooncake'). Phase 4 picks +5000;
-# trainer port range is (20000, 21000), engine port allocation lives
-# above that, so 25000+ stays clear.
-_COLOCATE_UNION_WORLD_PORT_OFFSET = 5000
-
-
 class TrainerActor(RayActor):
     def __init__(self, world_size: int, rank: int, master_addr: str, master_port: int):
         self._world_size = world_size
